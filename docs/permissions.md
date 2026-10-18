@@ -1,6 +1,6 @@
 # Permission justifications (AMO / CWS reviewer reference)
 
-Last updated: 2026-09-23 (v1.14.x)
+Last updated: 2026-10-18 (v2.0.0)
 
 Every permission in `manifest.json`, what it is used for, and where in the code.
 
@@ -12,11 +12,11 @@ Every permission in `manifest.json`, what it is used for, and where in the code.
 | `declarativeNetRequestWithHostAccess` | CSP shim: removes `Content-Security-Policy` and `X-Frame-Options` on `account.proton.me`, `verify.proton.me` and `verify-api.proton.me` so Proton's own hCaptcha iframe can render during human verification. Armed **only** on the human-verification branch of login, never for 2FA or mailbox-password, and removed as soon as the flow ends (or after 15 minutes if the CAPTCHA is abandoned). Session rules: kept in memory, never written to disk. Scoped by host permission. | `background/csp-shim.js`, armed at `background/background.js` (`_setPendingLogin`) |
 | `scripting` | Injects the FIDO2 bridge when a security-key login is in progress (page context needed for `navigator.credentials` with proton.me rpId). Also reads, via an open `mail.proton.me` tab, the web client's session slots (localStorage `ps-*`) and its per-client conversation-grouping setting (`GET /api/mail/v4/settings` with the tab's own session) so "Open in Proton Mail" links use the URL form the web UI expects. | `lib/scripting-shim.js`, `fido2/`, `background/url-detection.js`, `background/accounts.js` (`refreshWebViewModes`) |
 | `offscreen` (Chrome build only) | Notification sound playback: Chrome MV3 service workers have no `AudioContext`. | `background/audio-bridge.js`, `offscreen/` |
-| Host `*://*.proton.me/*` | All mail/calendar API traffic plus the three content scripts (captcha relay, FIDO2 bridge) which only activate during sign-in flows. | `manifest.json` |
+| Host `*://*.proton.me/*` | All mail/calendar API traffic plus the two content scripts (captcha relay, FIDO2 bridge) which only activate during sign-in flows. | `manifest.json` |
 
 Notes for reviewers:
 
-- The extension talks **only** to `*.proton.me` for mail. The single non-Proton endpoint is `mcpm-license.olausson.de` (premium license validation; no mail data, no PII beyond the license key).
+- The extension's own API requests go **only** to `*.proton.me`, plus `mcpm-license.olausson.de` for premium license validation while a license key is set (no mail data, no PII beyond the license key). Other hosts are reached only through user choices or Proton's own pages: a message's remote content once the user loads it, the sender's favicon when the opt-in favicon fallback is on, and hCaptcha inside Proton's human-verification page.
 - Content scripts run at `document_start` on `*.proton.me` but are inert except during an extension-initiated CAPTCHA or security-key sign-in.
 - `content_security_policy.extension_pages` is set explicitly (`script-src 'self' 'wasm-unsafe-eval'; object-src 'self'`), same policy as Proton Pass.
 - No remote code, no analytics, no telemetry. Vendored libraries: OpenPGP.js v6.3.1, bcrypt.js.
