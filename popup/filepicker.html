@@ -1,0 +1,91 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title data-i18n="filepickerTitle">Attach Files</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e; color: #e0e0e0;
+      display: flex; align-items: center; justify-content: center; min-height: 100vh;
+      padding: 24px;
+    }
+    .card {
+      background: #252540; border-radius: 16px; padding: 32px;
+      text-align: center; max-width: 480px; width: 100%;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    }
+    h2 { font-size: 20px; margin-bottom: 16px; color: #fff; }
+    .hint { font-size: 13px; color: #aaa; margin-bottom: 20px; }
+    .drop-zone {
+      border: 2px dashed #555; border-radius: 12px; padding: 32px 16px;
+      cursor: pointer; transition: border-color 0.2s, background 0.2s;
+      margin-bottom: 16px;
+    }
+    .drop-zone:hover, .drop-zone.drag-over {
+      border-color: #7c5cfc;
+      background: rgba(124, 92, 252, 0.08);
+    }
+    .drop-zone .icon { font-size: 36px; margin-bottom: 8px; }
+    .drop-zone .label { font-size: 14px; color: #ccc; }
+    .file-list { text-align: left; margin-bottom: 16px; }
+    .file-item {
+      padding: 6px 10px; background: #1a1a2e; border-radius: 6px;
+      margin-bottom: 4px; font-size: 13px;
+    }
+    .file-row { display: flex; align-items: center; gap: 8px; }
+    .file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-size { color: #888; font-size: 11px; flex-shrink: 0; }
+    .file-status { color: #aaa; font-size: 11px; flex-shrink: 0; }
+    .file-status.ok { color: #6fdb8f; }
+    .file-status.err { color: #ff6b6b; }
+    .file-bar {
+      height: 4px; background: #333; border-radius: 2px;
+      margin-top: 6px; overflow: hidden;
+    }
+    .file-bar-fill {
+      height: 100%; width: 0; background: #7c5cfc;
+      border-radius: 2px; transition: width 0.2s;
+    }
+    .file-result {
+      margin-top: 6px; font-size: 11px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .file-result a { color: #9d85ff; }
+    .file-remove {
+      background: none; border: none; color: #888; font-size: 16px;
+      cursor: pointer; padding: 0 4px;
+    }
+    .file-remove:hover { color: #ff6b6b; }
+    .btn {
+      padding: 10px 28px; border: none; border-radius: 8px;
+      font-size: 14px; cursor: pointer; margin: 4px;
+    }
+    .btn-primary { background: #7c5cfc; color: #fff; }
+    .btn-primary:hover { background: #6a4de0; }
+    .btn-secondary { background: #444; color: #fff; }
+    .btn-secondary:hover { background: #555; }
+    .btn:disabled { opacity: 0.5; cursor: default; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2 data-i18n="filepickerTitle">Attach Files</h2>
+    <p class="hint" data-i18n="filepickerHint">Select files to attach to your message. You can also drag and drop.</p>
+    <div class="drop-zone" id="drop-zone">
+      <div class="icon">📎</div>
+      <div class="label" data-i18n="filepickerDropLabel">Click to browse or drag files here</div>
+    </div>
+    <div class="file-list" id="file-list"></div>
+    <input type="file" id="file-input" multiple style="display:none">
+    <div>
+      <button class="btn btn-primary" id="btn-done" disabled data-i18n="filepickerDone">Attach & Return</button>
+      <button class="btn btn-secondary" id="btn-cancel" data-i18n="cancel">Cancel</button>
+    </div>
+  </div>
+  <script src="../lib/i18n.js"></script>
+  <script src="filepicker.js"></script>
+</body>
+</html>

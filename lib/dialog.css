@@ -1,0 +1,124 @@
+/* Styles for the in-page modal in lib/dialog.js.
+ *
+ * A linked stylesheet rather than a <style> element the module injects at
+ * runtime: injection has to succeed at exactly the moment the first dialog
+ * opens, and when it does not the dialog still appears, just unstyled and
+ * unusable at the bottom of the page. A <link> either loads with the page or
+ * the page is broken in ways nobody could miss.
+ *
+ * Colours come from whichever page hosts the dialog (popup.css, options.css),
+ * with fallbacks, so dark mode follows the host for free.
+ */
+
+.pd-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.45);
+  animation: pd-fade 120ms ease-out;
+}
+
+@keyframes pd-fade { from { opacity: 0; } to { opacity: 1; } }
+
+/* Anchored mode: the box is placed under the control that opened it rather
+ * than centred. Firefox's about:addons sizes the options iframe to the full
+ * content height, so the iframe viewport IS the whole document and a centred
+ * box lands in the middle of the page, off-screen in a short window. */
+.pd-backdrop.pd-anchored {
+  display: block;
+  padding: 0;
+}
+
+.pd-backdrop.pd-anchored .pd-box {
+  position: absolute;
+  margin: 0;
+}
+
+.pd-box {
+  width: 100%;
+  max-width: 340px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  padding: 18px;
+  border-radius: 10px;
+  border: 1px solid var(--border, #E6E6E6);
+  background: var(--bg, #FFFFFF);
+  color: var(--text, #0C0C14);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.28);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.pd-message {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+/* Field label, used by form() when a dialog asks for more than one value and
+   "the text box" is no longer self-explanatory. */
+.pd-label {
+  display: block;
+  margin-top: 12px;
+  margin-bottom: -6px; /* the input below carries its own 12px top margin */
+  font-size: 12px;
+  color: var(--text-secondary, #6B6B78);
+}
+
+.pd-input {
+  width: 100%;
+  margin-top: 12px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #E6E6E6);
+  background: var(--bg-secondary, #F5F5F5);
+  color: var(--text, #0C0C14);
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.pd-input:focus {
+  outline: none;
+  border-color: var(--purple, #6D4AFF);
+}
+
+.pd-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 18px;
+}
+
+.pd-btn {
+  padding: 7px 14px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.pd-btn:focus-visible {
+  outline: 2px solid var(--purple, #6D4AFF);
+  outline-offset: 2px;
+}
+
+.pd-cancel {
+  border-color: var(--border, #E6E6E6);
+  background: transparent;
+  color: var(--text, #0C0C14);
+}
+
+.pd-cancel:hover { background: var(--bg-hover, #EEEEEE); }
+
+.pd-confirm {
+  background: var(--purple, #6D4AFF);
+  color: #FFFFFF;
+}
+
+.pd-confirm:hover { filter: brightness(1.08); }
+.pd-confirm.pd-danger { background: var(--error, #DC3545); }

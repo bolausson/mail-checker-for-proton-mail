@@ -1,0 +1,20 @@
+{
+  "name": "proton-mail-checker",
+  "private": true,
+  "description": "Firefox and Chrome extension for Proton Mail",
+  "license": "SEE LICENSE IN LICENSE.md",
+  "scripts": {
+    "lint": "eslint background/ popup/ options/ captcha/ lib/i18n.js lib/dialog.js",
+    "lint:fix": "eslint --fix background/ popup/ options/ captcha/ lib/i18n.js",
+    "lint:amo": "bash scripts/lint-amo.sh",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "addons-linter": "^10.7.0",
+    "eslint": "^9.0.0",
+    "jsdom": "^29.1.1",
+    "vitest": "^4.1.2"
+  }
+}

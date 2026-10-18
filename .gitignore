@@ -1,0 +1,40 @@
+*.xpi
+*.har
+*-chrome.zip
+*-chrome.crx
+dist/
+web-ext-artifacts/
+node_modules/
+.DS_Store
+Thumbs.db
+*.code-workspace
+.vscode/
+.mcp.json
+.claude/
+
+# AMO API credentials (JWT issuer + secret)
+.amo-credentials
+
+# Chrome Web Store CRX signing keypair (RSA 2048) AND the Google
+# service-account JSON used by the CWS upload/publish API. Losing the
+# CRX private key means we cannot push updates, so keep an encrypted
+# backup elsewhere.
+.cws-credentials/
+
+# Outreach / beta-test email drafts: they contain invite addresses and
+# workflow notes that shouldn't live in the public repo.
+eMail-template-*.txt
+
+# Python compile artifacts from scripts/
+__pycache__/
+*.pyc
+
+# Store demo videos live on YouTube, not in git (large binaries)
+branding/store/*.mp4
+
+# Per-release notes are written for the release tooling and kept untracked.
+# The pattern prevents `git add -A` from staging them.
+release-notes-v*.txt
+
+# graphify knowledge-graph output (generated)
+graphify-out/

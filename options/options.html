@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self';">
+  <link rel="stylesheet" href="options.css">
+  <link rel="stylesheet" href="../lib/dialog.css">
+  <script src="../lib/i18n.js" defer></script>
+  <script src="../lib/dialog.js" defer></script>
+  <script src="../lib/code-patterns.js" defer></script>
+  <script src="../lib/browser-info.js" defer></script>
+  <script src="../lib/notification-rules.js" defer></script>
+  <script src="../lib/monitored-ids.js" defer></script>
+  <script src="options.js" defer></script>
+</head>
+<body>
+  <div class="options-container">
+    <h1 data-i18n="settingsTitle">Proton Mail Checker Settings</h1>
+
+    <!-- Premium banner: shown when the user is NOT premium.
+         Clicking the text area opens the public pricing page; Start Trial and
+         Buy License are discrete action buttons. -->
+    <div id="premium-banner" class="premium-banner hidden">
+      <a id="premium-banner-link" class="premium-banner__text" href="https://apps.olausson.de/#mail-checker-pricing" target="_blank" rel="noopener">
+        <strong id="premium-banner-title">Upgrade to Premium</strong>
+        <span id="premium-banner-text">Unlock multi-account, compose, HTML preview, and more.</span>
+      </a>
+      <div class="premium-banner__actions">
+        <button id="btn-start-trial" class="btn-primary" data-i18n="startFreeTrial">Start 14-Day Free Trial</button>
+        <button id="btn-buy-license" class="btn-secondary" data-i18n="buyLicense">Buy License</button>
+      </div>
+    </div>
+
+    <!-- Premium / License section -->
+    <details class="settings-section" id="premium-section">
+      <summary data-i18n="premiumSection">Premium & License</summary>
+
+      <div id="premium-status" class="premium-status">
+        <div class="premium-status__label" data-i18n="statusLabel">Status:</div>
+        <div id="premium-status-value" class="premium-status__value">-</div>
+      </div>
+
+      <div class="option-group" id="license-entry-group">
+        <label for="license-key-input" data-i18n="licenseKey">License key</label>
+        <div class="option-row">
+          <input type="text" id="license-key-input" placeholder="sub_… or txn_…" spellcheck="false" autocomplete="off">
+          <button id="btn-activate-license" class="btn-primary" data-i18n="activateLicense">Activate</button>
+        </div>
+        <div class="option-hint" data-i18n="licenseKeyHint">Paste your subscription ID (<code>sub_…</code>), or a transaction ID (<code>txn_…</code>) from your invoice. We'll look up the subscription for you.</div>
+        <div id="license-entry-error" class="option-hint error-text hidden"></div>
+        <!-- Why the previous key was removed automatically (30 days) -->
+        <div id="license-cleared-notice" class="license-validation__notice license-validation__notice--warning hidden"></div>
+      </div>
+
+      <div class="option-group hidden" id="license-active-group">
+        <label data-i18n="activeLicense">Active license</label>
+        <div class="option-row">
+          <code id="license-key-masked" class="license-key-masked">-</code>
+          <button id="btn-remove-license" class="btn-danger" data-i18n="removeLicense">Remove</button>
+        </div>
+
+        <div class="license-validation">
+          <div class="license-validation__row" id="license-plan-row">
+            <span class="license-validation__label" data-i18n="licenseType">Plan:</span>
+            <span id="license-plan" class="license-validation__value">-</span>
+          </div>
+          <div class="license-validation__row" id="license-period-row">
+            <span class="license-validation__label" data-i18n="currentPeriod">Current period:</span>
+            <span id="license-period" class="license-validation__value">-</span>
+          </div>
+          <div class="license-validation__row">
+            <span class="license-validation__label" data-i18n="lastValidated">Last validated:</span>
+            <span id="license-last-validated" class="license-validation__value">-</span>
+            <span id="license-validate-result" class="license-validation__result hidden" role="status" aria-live="polite"></span>
+            <button id="btn-validate-now" class="btn-secondary-light" data-i18n="validateNow">Validate now</button>
+          </div>
+          <div class="license-validation__row" id="license-manage-row">
+            <span class="license-validation__label" data-i18n="manageSubscription">Manage subscription:</span>
+            <div class="license-manage-buttons">
+              <button id="btn-manage-payment" class="btn-secondary-light" data-i18n="manageUpdatePayment">Update payment method</button>
+              <button id="btn-manage-cancel" class="btn-secondary-light" data-i18n="manageCancel">Cancel subscription</button>
+            </div>
+          </div>
+          <div id="license-validation-notice" class="license-validation__notice hidden"></div>
+          <div id="license-manage-notice" class="license-validation__notice hidden"></div>
+        </div>
+      </div>
+
+      <!-- Free-tier-only convenience option: hide all premium UI elements.
+           Irrelevant when the user is premium (no UI clutter to hide). -->
+      <div class="option-group" id="hide-premium-ui-group">
+        <label for="hide-premium-ui" data-i18n="hidePremiumUI">Hide premium-only UI elements</label>
+        <div class="option-row">
+          <input type="checkbox" id="hide-premium-ui">
+          <span class="option-hint" data-i18n="hidePremiumUIHint">Useful if you plan to stay on the free plan: removes non-functional premium buttons from the popup.</span>
+        </div>
+      </div>
+    </details>
+
+    <details class="settings-section">
+      <summary data-i18n="general">General</summary>
+
+      <div class="option-group">
+        <label for="poll-interval" data-i18n="checkInterval">Check interval</label>
+        <div class="option-row">
+          <select id="poll-interval">
+            <option value="0.5" data-i18n="every30Seconds">Every 30 seconds</option>
+            <option value="1" data-i18n="every1Minute">Every 1 minute</option>
+            <option value="2" data-i18n="every2Minutes">Every 2 minutes</option>
+            <option value="5" data-i18n="every5Minutes">Every 5 minutes</option>
+            <option value="10" data-i18n="every10Minutes">Every 10 minutes</option>
+            <option value="15" data-i18n="every15Minutes">Every 15 minutes</option>
+            <option value="30" data-i18n="every30Minutes">Every 30 minutes</option>
+            <option value="60" data-i18n="every60Minutes">Every 60 minutes</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <label for="popup-width" data-i18n="popupWidth">Popup width</label>
+        <div class="option-row">
+          <input type="range" id="popup-width" min="350" max="800" step="10">
+          <input type="number" id="popup-width-value" class="range-input" min="350" max="800" step="1" value="420"><span class="range-max">/ 800 px</span>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <label for="popup-height" data-i18n="popupHeight">Popup height</label>
+        <div class="option-row">
+          <input type="range" id="popup-height" min="300" max="600" step="10">
+          <input type="number" id="popup-height-value" class="range-input" min="300" max="600" step="1" value="540"><span class="range-max">/ 600 px</span>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <label for="theme-select" data-i18n="theme">Theme</label>
+        <div class="option-row">
+          <select id="theme-select">
+            <option value="classic" data-i18n="themeClassic">Classic</option>
+            <option value="modern" data-i18n="themeModern">Modern</option>
+            <option value="material" data-i18n="themeMaterial">Material</option>
+            <!-- Colour themes -->
+            <option value="slate" data-i18n="themeSlate">Slate</option>
+            <option value="graphite" data-i18n="themeGraphite">Graphite</option>
+            <option value="paper" data-i18n="themePaper">Paper</option>
+            <option value="nord" data-i18n="themeNord">Nord</option>
+            <option value="solarized" data-i18n="themeSolarized">Solarized</option>
+            <option value="forest" data-i18n="themeForest">Forest</option>
+            <option value="blossom" data-i18n="themeBlossom">Blossom</option>
+            <option value="terminal" data-i18n="themeTerminal">Terminal</option>
+            <option value="sunset" data-i18n="themeSunset">Sunset</option>
+            <option value="ocean" data-i18n="themeOcean">Ocean</option>
+            <!-- View / layout themes -->
+            <option value="stream" data-i18n="themeStream">Stream</option>
+            <option value="timeline" data-i18n="themeTimeline">Timeline</option>
+            <option value="digest" data-i18n="themeDigest">Digest</option>
+            <option value="hud" data-i18n="themeHud">HUD</option>
+            <option value="brutalist" data-i18n="themeBrutalist">Brutalist</option>
+            <option value="postcard" data-i18n="themePostcard">Postcard</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <label for="color-scheme" data-i18n="colorScheme">Color scheme</label>
+        <div class="option-row">
+          <select id="color-scheme">
+            <option value="auto" data-i18n="colorSchemeAuto">Auto (follow system)</option>
+            <option value="light" data-i18n="colorSchemeLight">Light</option>
+            <option value="dark" data-i18n="colorSchemeDark">Dark</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <label for="display-density" data-i18n="displayDensity">Display density</label>
+        <div class="option-row">
+          <select id="display-density">
+            <option value="comfortable" data-i18n="comfortable">Comfortable</option>
+            <option value="cozy" data-i18n="cozy">Cozy</option>
+            <option value="compact" data-i18n="compact">Compact</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <label for="max-emails" data-i18n="messagesPerAccount">Messages shown per account</label>
+        <div class="option-row">
+          <select id="max-emails">
+            <option value="5">5</option>
+            <option value="10">10</option>
+            <option value="15">15</option>
+            <option value="20">20</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <label for="sender-display" data-i18n="senderFormat">Sender display format</label>
+        <div class="option-row">
+          <select id="sender-display">
+            <option value="name" data-i18n="nameOnly">Name only (default)</option>
+            <option value="email" data-i18n="emailOnly">Email only</option>
+            <option value="name-email" data-i18n="nameEmail">Name &lt;email&gt;</option>
+            <option value="email-name" data-i18n="emailName">&lt;email&gt; Name</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <label for="preview-lines" data-i18n="previewLines">Preview lines</label>
+        <div class="option-row">
+          <select id="preview-lines">
+            <option value="0" data-i18n="previewLinesNone">None (default)</option>
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+            <option value="6">6</option>
+            <option value="7">7</option>
+            <option value="8">8</option>
+            <option value="9">9</option>
+            <option value="10">10</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="use-24h-time">
+          <span data-i18n="use24hTime">Use 24-hour time format</span>
+        </label>
+      </div>
+
+      <div class="option-group">
+        <label for="preview-format" data-i18n="previewFormat">Message preview format</label>
+        <div class="option-row">
+          <select id="preview-format">
+            <option value="html" data-i18n="htmlRender">HTML (render formatting)</option>
+            <option value="plaintext" data-i18n="plainText">Plain text</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="always-load-external">
+          <span data-i18n="alwaysLoadExternalContent">Always load external content in HTML emails</span>
+        </label>
+      </div>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="load-sender-icons-always">
+          <span data-i18n="loadSenderIconsAlways">Always show sender logos</span>
+        </label>
+        <p class="option-hint" data-i18n="loadSenderIconsAlwaysHint">Sender logos (including verified BIMI brand logos) are loaded via Proton's servers, so the sender's domain never sees you. By default they still follow your external-content setting; enable this to always show them.</p>
+      </div>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="sender-icon-favicon-fallback">
+          <span data-i18n="senderIconFaviconFallback">Fall back to the sender's favicon</span>
+        </label>
+        <p class="option-hint" data-i18n="senderIconFaviconFallbackHint">When Proton has no logo for a sender (typically small or personal domains without a verified BIMI record), load the favicon directly from the sender's website instead of showing initials. Unlike the Proton logo above, this fetches straight from the sender's server, which can let them see that the message reached you, because the icon loads as soon as the message appears in your list, not only when you open it. Off by default.</p>
+      </div>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="email-canvas-heuristic">
+          <span data-i18n="emailCanvasHeuristic">Force readable background for dark HTML emails</span>
+        </label>
+        <p class="option-hint" data-i18n="emailCanvasHeuristicDesc">When the extension is in dark mode, emails that set dark text but no background get a white canvas so the text stays readable.</p>
+      </div>
+
+      <div class="option-group">
+        <label for="compose-mode" data-i18n="composeMode">Compose mode</label>
+        <div class="option-row">
+          <select id="compose-mode">
+            <option value="webui" data-i18n="composeModeWebui">Open in Proton Mail</option>
+            <option value="popup" data-i18n="composeModePopup">Compose in popup</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <label for="compose-format" data-i18n="composeFormat">Compose format</label>
+        <div class="option-row">
+          <select id="compose-format">
+            <option value="html" data-i18n="htmlRichText">HTML (rich text)</option>
+            <option value="plaintext" data-i18n="plainText">Plain text</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <label for="reply-format" data-i18n="replyFormat">Quick reply format</label>
+        <div class="option-row">
+          <select id="reply-format">
+            <option value="html" data-i18n="htmlRichText">HTML (rich text)</option>
+            <option value="plaintext" data-i18n="plainText">Plain text</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="ai-assistant-enabled" checked>
+          <span data-i18n="scribeSettingLabel">AI writing assistant</span>
+        </label>
+        <p class="option-hint" data-i18n="scribeSettingDesc">Adds a ✨ button to the reply and compose editors for Write for me, Proofread, Expand, Shorten and tone changes. Runs on Proton's servers using your own Proton Scribe subscription. Requires the assistant to be enabled in Proton settings as "Run on Proton servers".</p>
+      </div>
+
+      <div class="option-group">
+        <label data-i18n="driveSettingsTitle">Share via Proton Drive</label>
+        <p class="option-hint" data-i18n="driveSettingsDesc">Defaults for the "Share via Proton Drive" button in the compose and reply editors: files are uploaded to your Proton Drive and a public link is inserted into the email instead of the attachment.</p>
+        <div class="option-row">
+          <label for="drive-default-folder" data-i18n="driveFolderSetting">Drive folder</label>
+          <input type="text" id="drive-default-folder" placeholder="mcpm-shared-files">
+        </div>
+        <p class="option-hint" data-i18n="driveFolderSettingHint">Created under "My files" if it doesn't exist. Use / for subfolders.</p>
+        <div class="option-row">
+          <label for="drive-default-expiration" data-i18n="driveDefaultExpirationSetting">Default link expiration</label>
+          <select id="drive-default-expiration">
+            <option value="1">1</option>
+            <option value="7">7</option>
+            <option value="15">15</option>
+            <option value="30">30</option>
+            <option value="60">60</option>
+            <option value="90">90</option>
+            <option value="0" data-i18n="driveNoExpiry">No expiration</option>
+          </select>
+        </div>
+        <div class="option-row">
+          <label for="drive-default-permission" data-i18n="driveDefaultPermissionSetting">Default link permission</label>
+          <select id="drive-default-permission">
+            <option value="viewer" data-i18n="driveViewer">Viewer</option>
+            <option value="editor" data-i18n="driveEditor">Editor</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <label for="language" data-i18n="language">Language</label>
+        <div class="option-row">
+          <select id="language">
+            <option value="en">English</option>
+            <option value="bg">&#1041;&#1098;&#1083;&#1075;&#1072;&#1088;&#1089;&#1082;&#1080;</option>
+            <option value="ca">Catal&#224;</option>
+            <option value="cs">&#268;e&#353;tina</option>
+            <option value="da">Dansk</option>
+            <option value="de">Deutsch</option>
+            <option value="el">&#917;&#955;&#955;&#951;&#957;&#953;&#954;&#940;</option>
+            <option value="es">Espa&#241;ol</option>
+            <option value="et">Eesti</option>
+            <option value="fi">Suomi</option>
+            <option value="fr">Fran&#231;ais</option>
+            <option value="hr">Hrvatski</option>
+            <option value="hu">Magyar</option>
+            <option value="it">Italiano</option>
+            <option value="lt">Lietuvi&#371;</option>
+            <option value="lv">Latvie&#353;u</option>
+            <option value="nb">Norsk</option>
+            <option value="nl">Nederlands</option>
+            <option value="pl">Polski</option>
+            <option value="pt">Portugu&#234;s</option>
+            <option value="ro">Rom&#226;n&#259;</option>
+            <option value="ru">&#1056;&#1091;&#1089;&#1089;&#1082;&#1080;&#1081;</option>
+            <option value="sk">Sloven&#269;ina</option>
+            <option value="sl">Sloven&#353;&#269;ina</option>
+            <option value="sr">Srpski</option>
+            <option value="sv">Svenska</option>
+            <option value="tr">T&#252;rk&#231;e</option>
+            <option value="uk">&#1059;&#1082;&#1088;&#1072;&#1111;&#1085;&#1089;&#1100;&#1082;&#1072;</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <label for="spellcheck-language" data-i18n="spellcheckLanguage">Spellcheck language</label>
+        <div class="option-row">
+          <select id="spellcheck-language">
+            <option value="auto" data-i18n="spellcheckAuto">Auto (browser default)</option>
+            <option value="en">English</option>
+            <option value="bg">&#1041;&#1098;&#1083;&#1075;&#1072;&#1088;&#1089;&#1082;&#1080;</option>
+            <option value="ca">Catal&#224;</option>
+            <option value="cs">&#268;e&#353;tina</option>
+            <option value="da">Dansk</option>
+            <option value="de">Deutsch</option>
+            <option value="el">&#917;&#955;&#955;&#951;&#957;&#953;&#954;&#940;</option>
+            <option value="es">Espa&#241;ol</option>
+            <option value="et">Eesti</option>
+            <option value="fi">Suomi</option>
+            <option value="fr">Fran&#231;ais</option>
+            <option value="hr">Hrvatski</option>
+            <option value="hu">Magyar</option>
+            <option value="it">Italiano</option>
+            <option value="lt">Lietuvi&#371;</option>
+            <option value="lv">Latvie&#353;u</option>
+            <option value="nb">Norsk</option>
+            <option value="nl">Nederlands</option>
+            <option value="pl">Polski</option>
+            <option value="pt">Portugu&#234;s</option>
+            <option value="ro">Rom&#226;n&#259;</option>
+            <option value="ru">&#1056;&#1091;&#1089;&#1089;&#1082;&#1080;&#1081;</option>
+            <option value="sk">Sloven&#269;ina</option>
+            <option value="sl">Sloven&#353;&#269;ina</option>
+            <option value="sr">Srpski</option>
+            <option value="sv">Svenska</option>
+            <option value="tr">T&#252;rk&#231;e</option>
+            <option value="uk">&#1059;&#1082;&#1088;&#1072;&#1111;&#1085;&#1089;&#1100;&#1082;&#1072;</option>
+          </select>
+        </div>
+        <p class="option-hint" data-i18n="spellcheckHint">Requires the dictionary to be installed in Firefox and <code>layout.spellcheckDefault</code> set to <code>2</code> in <code>about:config</code>.</p>
+      </div>
+
+      <div class="option-group">
+        <label for="custom-css" data-i18n="customCSS">Custom CSS</label>
+        <textarea id="custom-css" class="custom-css-input" rows="4" spellcheck="false" placeholder="/* Override any style */"></textarea>
+        <div class="option-row option-row-spaced">
+          <button id="btn-download-css" class="btn-action" data-i18n="downloadCurrentCSS">Download current CSS</button>
+        </div>
+        <p class="option-hint" data-i18n="customCSSHint">Add your own CSS to customize the popup appearance. Applied after all theme styles.</p>
+      </div>
+
+      <div class="option-group">
+        <label data-i18n="quickActions">Quick actions (drag to reorder)</label>
+        <div id="actions-sortable" class="actions-sortable"></div>
+        <p class="option-hint" data-i18n="quickActionsDescription">Checked actions are shown on hover. Unchecked actions are in the overflow menu. Order applies everywhere.</p>
+      </div>
+    </details>
+
+    <details class="settings-section">
+      <summary data-i18n="notifications">Notifications</summary>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="notifications-enabled">
+          <span data-i18n="desktopNotifications">Desktop notifications for new mail</span>
+        </label>
+      </div>
+
+      <div class="option-group">
+        <label for="notification-click-action" data-i18n="notificationClickAction">When clicking a notification</label>
+        <div class="option-row">
+          <select id="notification-click-action">
+            <option value="openMessage" data-i18n="openMessage">Open message</option>
+            <option value="openInbox" data-i18n="openInbox">Open inbox</option>
+            <option value="markRead" data-i18n="markAsRead">Mark as read</option>
+            <option value="archive" data-i18n="archive">Archive</option>
+            <option value="none" data-i18n="doNothing">Do nothing</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="notification-sound-enabled">
+          <span data-i18n="playSound">Play sound on new mail</span>
+        </label>
+      </div>
+
+      <div class="option-group option-sub" id="sound-settings">
+        <label for="notification-sound" data-i18n="sound">Sound</label>
+        <div class="option-row">
+          <select id="notification-sound">
+            <option value="chime" data-i18n="chime">Chime</option>
+            <option value="bell" data-i18n="bell">Bell</option>
+            <option value="ding" data-i18n="ding">Ding</option>
+          </select>
+          <button id="btn-test-sound" class="btn-test" data-i18n="test">Test</button>
+        </div>
+      </div>
+
+      <div class="option-group option-sub" id="volume-settings">
+        <label for="notification-volume" data-i18n="volume">Volume</label>
+        <div class="option-row">
+          <input type="range" id="notification-volume" min="0" max="100" step="5">
+          <span id="volume-value" class="range-value">50%</span>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="notification-preview-text" checked>
+          <span data-i18n="showPreview">Show message preview in notifications</span>
+        </label>
+      </div>
+
+      <div class="option-group">
+        <label for="badge-color" data-i18n="badgeColor">Badge color</label>
+        <div class="option-row">
+          <input type="color" id="badge-color" value="#6D4AFF">
+          <span id="badge-color-preview" class="color-preview"></span>
+          <span class="range-value" data-i18n="unreadCountBadge">Unread count badge</span>
+        </div>
+      </div>
+    </details>
+
+    <details class="settings-section" id="quiet-rules-section">
+      <summary>
+        <span data-i18n="quietRules">Quiet mail rules</span>
+        <span class="section-count" id="quiet-rule-count"></span>
+      </summary>
+
+      <p class="option-hint" data-i18n="quietRulesDesc">Mute mail you don't want to be interrupted by. Each rule matches incoming messages; for the mail it matches you can hide it from the message list, switch off the desktop notification, leave it out of the unread count, silence the sound, or any combination.</p>
+      <p class="option-hint" data-i18n="quietRulesMatchHint">From and To match anywhere in the address, ignoring case: a whole address, a domain (@shop.com) or a fragment (noreply). Subject and Body are regular expressions, also ignoring case. The fields you fill in must all match; empty fields are ignored. Every rule that matches applies its ticks.</p>
+      <p class="option-hint" data-i18n="quietRulesRegexFlavour">Subject and Body take JavaScript (ECMAScript) regular expressions, the same syntax a browser console uses. Enter the pattern only, without surrounding slashes or flags; matching is always case-insensitive, so TEST and test behave identically.</p>
+      <p class="option-hint" data-i18n="quietRulesExamples">Examples: From "@newsletter.shop.com" with "No desktop notification" silences that whole sender domain. Subject "^\[Jira\]" with "Exclude from unread count" keeps ticket mail out of the badge. To "alias+shop@" with "No notification sound" mutes only mail sent to that alias. Body "unsubscribe" catches bulk mail whatever the sender.</p>
+      <p class="option-hint quiet-rules-warning" data-i18n="quietRulesBodyCost">Note on Body: sender, recipient and subject arrive with the message list, but the body does not, so as soon as one enabled rule has a Body pattern, every new message is downloaded and decrypted locally to test it. That costs one request and some processing per message. Leave Body empty unless you need it.</p>
+      <p class="option-hint" data-i18n="quietRulesCountHint">"Exclude from unread count" applies to the messages the extension has loaded (see "Max emails per account" under General). A matching message older than that window still counts towards the badge.</p>
+
+      <div class="option-group">
+        <div class="quiet-rules-list" id="quiet-rules-list" role="list"></div>
+      </div>
+
+      <div class="option-group">
+        <button type="button" class="btn-primary" id="quiet-rule-add-btn" data-i18n="quietRuleAdd">+ Add rule</button>
+      </div>
+    </details>
+
+    <details class="settings-section">
+      <summary data-i18n="behavior">Behavior</summary>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="auto-mark-read-preview">
+          <span data-i18n="markReadOnPreview">Mark as read when previewing a message</span>
+        </label>
+      </div>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="auto-mark-read-reply">
+          <span data-i18n="markReadOnReply">Mark as read when replying to a message</span>
+        </label>
+      </div>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="auto-mark-read-archive">
+          <span data-i18n="markReadOnArchive">Mark as read when archiving</span>
+        </label>
+      </div>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="auto-mark-read-delete">
+          <span data-i18n="markReadOnDelete">Mark as read when deleting</span>
+        </label>
+      </div>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="auto-mark-read-spam">
+          <span data-i18n="markReadOnSpam">Mark as read when moving to spam</span>
+        </label>
+      </div>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="auto-mark-read-phishing">
+          <span data-i18n="markReadOnPhishing">Mark as read when reporting phishing</span>
+        </label>
+      </div>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="auto-mark-read-star">
+          <span data-i18n="markReadOnStar">Mark as read when starring</span>
+        </label>
+      </div>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="auto-mark-read-move-to-folder">
+          <span data-i18n="markReadOnMoveToFolder">Mark as read when moving to folder</span>
+        </label>
+      </div>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="auto-mark-read-label">
+          <span data-i18n="markReadOnLabel">Mark as read when applying label</span>
+        </label>
+      </div>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="hide-send-archive">
+          <span data-i18n="hideSendArchive">Hide "Send & Archive" button</span>
+        </label>
+      </div>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="prettify-raw">
+          <span data-i18n="prettifyRaw">Prettify HTML in RAW view</span>
+        </label>
+      </div>
+
+      <div class="option-group">
+        <label class="option-label" data-i18n="imageAttachMode">Image attachments</label>
+        <select id="image-attach-mode" class="option-select">
+          <option value="inline" data-i18n="imageInline">Embed inline</option>
+          <option value="attachment" data-i18n="imageAsAttachment">Attach as file</option>
+          <option value="both" data-i18n="imageBoth">Both (inline + attachment)</option>
+        </select>
+      </div>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="auto-advance">
+          <span data-i18n="autoAdvance">Auto-advance to next message after action</span>
+        </label>
+      </div>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="nav-cross-account" checked>
+          <span data-i18n="navCrossAccount">Navigate across accounts</span>
+        </label>
+        <p class="option-hint" data-i18n="navCrossAccountDesc">When navigating messages with prev/next, continue into the next account's messages.</p>
+      </div>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="nav-wrap">
+          <span data-i18n="navWrap">Wrap around at first/last message</span>
+        </label>
+        <p class="option-hint" data-i18n="navWrapDesc">Jump to the last message when pressing previous on the first, and vice versa.</p>
+      </div>
+    </details>
+
+    <details class="settings-section" id="code-detection-section">
+      <summary>
+        <span data-i18n="codeDetection">Verification code detection</span>
+        <span class="section-count" id="code-pattern-count"></span>
+      </summary>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="code-detection-enabled" checked>
+          <span data-i18n="codeDetectionEnabled">Detect verification codes in messages</span>
+        </label>
+        <p class="option-hint" data-i18n="codeDetectionHint">Patterns are tried in order against the subject and preview text. The first capturing-group match becomes the badge.</p>
+      </div>
+
+      <div class="option-group">
+        <div class="patterns-list" id="code-patterns-list" role="list"></div>
+      </div>
+
+      <div class="option-group">
+        <label for="code-pattern-name" data-i18n="addPattern">Add a new pattern</label>
+        <div class="pattern-add">
+          <input type="text" id="code-pattern-name" placeholder="Name (e.g. Bank OTP)" maxlength="40">
+          <input type="text" id="code-pattern-regex" class="mono"
+                 placeholder="Regex with one capture group, e.g. code\s*(\d{6})">
+          <div class="pattern-add-row">
+            <span class="option-hint pattern-add-hint" data-i18n="patternAddHint">Tip: wrap the digits in <code>( )</code></span>
+            <button type="button" class="btn-primary" id="code-pattern-add-btn" data-i18n="addPatternBtn">+ Add</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <button type="button" class="btn-test" id="code-pattern-reset-all" data-i18n="resetAllDefaults">Reset all defaults</button>
+      </div>
+    </details>
+
+    <details class="settings-section">
+      <summary data-i18n="accountAlignment">Account Alignment</summary>
+      <p class="option-hint" data-i18n="accountAlignmentDesc">Maps extension accounts to Proton Mail web interface slots (/u/0/, /u/1/, ...). Auto-detected when you use Proton Mail in the browser. Override manually if needed.</p>
+      <div id="account-alignment-list" class="account-alignment-list"></div>
+      <div class="option-group">
+        <button id="btn-refresh-alignment" class="btn-action" data-i18n="refreshAlignment">Refresh</button>
+        <p class="option-hint" data-i18n="refreshAlignmentDesc">Opens Proton Mail to detect account slots. Each account must have been opened at least once in the Proton Mail web interface (mail.proton.me) for detection to work.</p>
+      </div>
+    </details>
+
+    <details class="settings-section">
+      <summary data-i18n="data">Data</summary>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="sync-enabled">
+          <span data-i18n="syncSettings">Sync settings across devices (Firefox account)</span>
+        </label>
+        <p class="option-hint" data-i18n="syncSettingsDesc">Synced data includes your account email addresses and per-account display settings (never passwords, tokens or keys). It is stored in your browser vendor's sync infrastructure.</p>
+        <div class="option-row sync-status-row">
+          <button id="btn-sync-now" class="btn-action" data-i18n="syncNow">Sync now</button>
+          <span id="sync-status" class="sync-status"></span>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <label data-i18n="exportImport">Export / Import settings</label>
+        <div class="option-row">
+          <button id="btn-export" class="btn-action" data-i18n="export">Export</button>
+          <button id="btn-import" class="btn-action" data-i18n="import">Import</button>
+          <input type="file" id="import-file" accept=".json" class="hidden-file">
+        </div>
+        <p class="option-hint" data-i18n="exportImportDesc">The export file contains your account email addresses and display settings in plain text (never passwords, tokens or keys). Treat it as personal data and delete it after transferring.</p>
+        <div class="option-row">
+          <span id="export-import-status" class="sync-status"></span>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="debug-logging">
+          <span data-i18n="debugLogging">Enable debug logging</span>
+        </label>
+        <p class="option-hint" data-i18n="debugLoggingDesc">Outputs verbose logs to the browser console for troubleshooting. May include email addresses and account details.</p>
+      </div>
+
+      <div class="option-group">
+        <label data-i18n="diagLogTitle">Diagnostics</label>
+        <p class="option-hint" data-i18n="diagLogDesc">Records recent sign-in and token-refresh activity locally (no passwords or tokens) to help diagnose session/expiry problems. It survives browser restarts, so it is still available after a problem occurs.</p>
+        <div class="option-row">
+          <button id="btn-export-diag" class="btn-action" data-i18n="diagExportLog">Export diagnostic log</button>
+          <button id="btn-clear-diag" class="btn-action btn-danger" data-i18n="diagClearLog">Clear log</button>
+          <span id="clear-diag-status" class="sync-status"></span>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="cache-enabled">
+          <span data-i18n="enableCache">Enable email cache</span>
+        </label>
+        <p class="option-hint" data-i18n="enableCacheDesc">Stores your last email list locally (encrypted) so your messages and the configured popup size appear instantly when you start your browser, instead of waiting for the first check. Only message details are stored (sender, subject, time), never message text. Off by default.</p>
+      </div>
+
+      <div class="option-group">
+        <label data-i18n="clearCache">Clear cache</label>
+        <p class="option-hint" data-i18n="clearCacheDesc">Removes the locally cached email list (used to show your messages instantly on browser start). Your accounts and settings are not affected; messages reload on the next check.</p>
+        <div class="option-row">
+          <button id="btn-clear-cache" class="btn-action btn-danger" data-i18n="clearCache">Clear cache</button>
+          <span id="clear-cache-status" class="sync-status"></span>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <label data-i18n="resetSettings">Reset settings</label>
+        <div class="option-row">
+          <button id="btn-reset" class="btn-action btn-danger" data-i18n="resetToDefaults">Reset to defaults</button>
+        </div>
+        <p class="option-hint" data-i18n="resetSettingsDesc">Resets all settings to their default values. Your accounts will not be affected.</p>
+      </div>
+    </details>
+
+    <div class="status" id="status"></div>
+    <div class="version-info" id="version-info"></div>
+
+    <!-- Legal notices: trademark disclaimer, backup reminder and links to
+         the Impressum / Privacy / Terms pages on apps.olausson.de, as
+         required for commercial software from Germany (§ 5 DDG). -->
+    <footer class="legal-notices">
+      <p class="legal-disclaimer" data-i18n="legalDisclaimer">Mail Checker for Proton Mail is an independent project and is not affiliated with, endorsed by, or officially connected to Proton AG. "Proton" and "Proton Mail" are trade marks of Proton AG.</p>
+      <p class="legal-backup" data-i18n="legalBackup">Your messages live on Proton's servers; this extension is a viewer and composer. Bugs in any client can in principle delete or corrupt mail. Please keep your own backups of important messages using Proton's export tools.</p>
+      <p class="legal-links">
+        <a href="https://apps.olausson.de/impressum.txt" target="_blank" rel="noopener">Impressum</a>
+        &middot;
+        <a href="https://apps.olausson.de/privacy-policy.txt" target="_blank" rel="noopener">Privacy</a>
+        &middot;
+        <a href="https://apps.olausson.de/terms-and-conditions.txt" target="_blank" rel="noopener">Terms</a>
+      </p>
+    </footer>
+  </div>
+
+</body>
+</html>

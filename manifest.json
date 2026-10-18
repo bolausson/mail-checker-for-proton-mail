@@ -1,0 +1,108 @@
+{
+  "manifest_version": 3,
+  "name": "Mail Checker for Proton Mail",
+  "version": "2.0.0",
+  "description": "Read, write and manage Proton Mail without opening a tab. Attachments, calendar RSVP, notifications, multi-account.",
+
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "proton-mail-checker@bolausson",
+      "strict_min_version": "142.0",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
+    }
+  },
+
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "64": "icons/icon-64.png",
+    "128": "icons/icon-128.png"
+  },
+
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
+  },
+
+  "permissions": [
+    "alarms",
+    "notifications",
+    "storage",
+    "scripting",
+    "declarativeNetRequestWithHostAccess"
+  ],
+
+  "host_permissions": ["*://*.proton.me/*"],
+
+  "content_scripts": [
+    {
+      "matches": ["*://*.proton.me/*"],
+      "js": ["captcha/captcha-inject.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["*://*.proton.me/*"],
+      "js": ["fido2/fido2-inject.js"],
+      "run_at": "document_start"
+    }
+  ],
+
+  "background": {
+    "scripts": [
+      "background/constants.js",
+      "background/diag.js",
+      "lib/binary-utils.js",
+      "lib/pqc-detect.js",
+      "lib/account-limit.js",
+      "lib/notification-rules.js",
+      "lib/monitored-ids.js",
+      "lib/openpgp.min.js",
+      "lib/bcrypt.min.js",
+      "lib/i18n.js",
+      "lib/scripting-shim.js",
+      "background/auth.js",
+      "background/encryption.js",
+      "background/url-detection.js",
+      "background/csp-shim.js",
+      "background/calendar-ics.js",
+      "background/calendar-serialize.js",
+      "background/optimistic-tombstones.js",
+      "background/accounts.js",
+      "background/ai-assistant.js",
+      "background/calendar-api.js",
+      "background/contacts.js",
+      "background/badge.js",
+      "background/audio-bridge.js",
+      "background/notifier.js",
+      "background/dnd.js",
+      "background/premium.js",
+      "background/drive.js",
+      "background/poller.js",
+      "background/background.js"
+    ]
+  },
+
+  "action": {
+    "default_icon": {
+      "16": "icons/icon-gray-16.png",
+      "32": "icons/icon-gray-32.png"
+    },
+    "default_title": "Mail Checker for Proton Mail",
+    "default_popup": "popup/popup.html"
+  },
+
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": false
+  },
+
+  "protocol_handlers": [
+    {
+      "protocol": "mailto",
+      "name": "Proton Mail",
+      "uriTemplate": "https://mail.proton.me/u/0/inbox#mailto=%s"
+    }
+  ]
+}

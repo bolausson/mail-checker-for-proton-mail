@@ -1,0 +1,357 @@
+#!/usr/bin/env node
+/**
+ * Build a Chrome MV3 variant of the extension from the canonical
+ * Firefox MV3 source.
+ *
+ *   node scripts/build-chrome.js
+ *
+ * Output:
+ *   dist/chrome/:                  unpacked extension, loadable via
+ *                                  Chrome → "Load Unpacked"
+ *   mcpm-<version>-chrome.crx:     signed package for Chrome Web Store
+ *                                  upload (signed with the RSA key in
+ *                                  .cws-credentials/private-key.pem,
+ *                                  matching the public key registered
+ *                                  with CWS Verified Uploads)
+ *
+ * The canonical Firefox source is unchanged. This script:
+ *   1. Copies the source tree (selected directories) into dist/chrome/.
+ *   2. Transforms manifest.json for Chrome: strips Firefox-only fields
+ *      (browser_specific_settings, protocol_handlers), adds Chrome-only
+ *      permissions, swaps background.scripts → background.service_worker.
+ *   3. Generates service_worker.js that does importScripts(...) for the
+ *      same background scripts the Firefox manifest lists, in the same
+ *      order, with the chrome→browser polyfill loaded first.
+ *   4. Injects lib/browser-polyfill.js into popup.html and options.html
+ *      before any other script tags.
+ *   5. Prepends lib/browser-polyfill.js to each content_scripts.js array.
+ *   6. Signs the dist tree as a CRX3 file using Chrome's --pack-extension
+ *      and the registered RSA private key.
+ */
+
+'use strict';
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { spawnSync } = require('child_process');
+
+// ---- Paths ---------------------------------------------------------------
+
+const PROJECT_ROOT = path.resolve(__dirname, '..');
+const SRC_MANIFEST = path.join(PROJECT_ROOT, 'manifest.json');
+const DIST_DIR = path.join(PROJECT_ROOT, 'dist', 'chrome');
+const POLYFILL_REL = 'lib/browser-polyfill.js';
+
+// Directories to copy verbatim from source. Anything not in this list
+// (node_modules, scripts, dist, tests, .git, etc.) is excluded.
+const COPY_DIRS = [
+  'background',
+  'captcha',
+  'fido2',
+  'icons',
+  'lib',
+  'options',
+  'popup',
+  'offscreen',
+  'preview',
+];
+
+// Top-level files to copy verbatim alongside the directories.
+const COPY_FILES = [
+  'README.md',
+  'LICENSE.md',
+];
+
+// ---- Helpers -------------------------------------------------------------
+
+function rimraf(p) {
+  if (!fs.existsSync(p)) return;
+  fs.rmSync(p, { recursive: true, force: true });
+}
+
+function copyDir(src, dest) {
+  fs.mkdirSync(dest, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const s = path.join(src, entry.name);
+    const d = path.join(dest, entry.name);
+    if (entry.isDirectory()) copyDir(s, d);
+    else if (entry.isFile()) fs.copyFileSync(s, d);
+  }
+}
+
+function readJSON(p) {
+  return JSON.parse(fs.readFileSync(p, 'utf8'));
+}
+
+function writeJSON(p, obj) {
+  fs.writeFileSync(p, JSON.stringify(obj, null, 2) + '\n');
+}
+
+// ---- Manifest transform --------------------------------------------------
+
+function transformManifest(src) {
+  const mv3 = JSON.parse(JSON.stringify(src));
+
+  // Firefox-only metadata
+  delete mv3.browser_specific_settings;
+
+  // Chrome stable rejects protocol_handlers ("requires dev channel or
+  // newer"). The mailto: handler is Firefox-only for now; on Chrome it
+  // could be re-enabled later via navigator.registerProtocolHandler from
+  // the popup, which needs a user gesture and is out of scope here.
+  delete mv3.protocol_handlers;
+
+  // Chrome MV3 minimum: 121 (chrome.* APIs return promises, so the
+  // polyfill `browser = chrome` alias works without further wrapping).
+  // Offscreen needs 109+, declarativeNetRequest dynamic rules need 102+.
+  mv3.minimum_chrome_version = '121';
+
+  // Add Chrome-only permissions used by the shims. offscreen is
+  // Chrome-specific (audio bridge: Firefox event page has window so
+  // doesn't need it). declarativeNetRequestWithHostAccess and scripting
+  // are already in the canonical manifest (both browsers need them
+  // post-MV3).
+  const apiPerms = (mv3.permissions || []).slice();
+  if (!apiPerms.includes('offscreen')) apiPerms.push('offscreen');
+  mv3.permissions = apiPerms;
+
+  // Background: Firefox MV3 uses scripts[] (event page); Chrome MV3
+  // requires service_worker.
+  mv3.background = { service_worker: 'service_worker.js' };
+
+  // Content scripts: prepend the chrome→browser polyfill so the existing
+  // browser.* references work on Chrome.
+  if (Array.isArray(mv3.content_scripts)) {
+    for (const cs of mv3.content_scripts) {
+      if (Array.isArray(cs.js) && !cs.js.includes(POLYFILL_REL)) {
+        cs.js = [POLYFILL_REL, ...cs.js];
+      }
+    }
+  }
+
+  return mv3;
+}
+
+// ---- Service worker generation ------------------------------------------
+
+function generateServiceWorker(backgroundScripts) {
+  const lines = [
+    '// Auto-generated by scripts/build-chrome.js. Do not edit by hand.',
+    '// Loads the same background scripts the Firefox manifest lists,',
+    '// in the same order, after aliasing chrome→browser.',
+    '',
+    "if (typeof browser === 'undefined' && typeof chrome !== 'undefined') {",
+    '  self.browser = chrome;',
+    '}',
+    '',
+    'importScripts(',
+  ];
+  const importedRel = backgroundScripts.map(s => '  ' + JSON.stringify(s));
+  lines.push(importedRel.join(',\n'));
+  lines.push(');');
+  lines.push('');
+  return lines.join('\n');
+}
+
+// ---- HTML polyfill injection --------------------------------------------
+
+function injectPolyfillIntoHtml(htmlPath, depthFromRoot) {
+  if (!fs.existsSync(htmlPath)) return;
+  let html = fs.readFileSync(htmlPath, 'utf8');
+  // Compute relative path from the HTML file back to the polyfill.
+  // depthFromRoot: how many '../' to climb (popup.html in popup/ → 1).
+  const rel = '../'.repeat(depthFromRoot) + POLYFILL_REL;
+  const tag = `<script src="${rel}"></script>`;
+  if (html.includes(tag)) return; // already injected
+  // Insert as the first <script> in <head>, or right after <head> if no
+  // existing scripts. Most reliable: insert after the <head> opening tag.
+  const headIdx = html.indexOf('<head>');
+  if (headIdx === -1) {
+    console.warn(`[build-chrome] No <head> in ${htmlPath}; prepending polyfill tag at top.`);
+    html = tag + '\n' + html;
+  } else {
+    const insertAt = headIdx + '<head>'.length;
+    html = html.slice(0, insertAt) + '\n  ' + tag + html.slice(insertAt);
+  }
+  fs.writeFileSync(htmlPath, html);
+}
+
+// ---- Sign CRX via Chrome ------------------------------------------------
+
+const CWS_PRIVATE_KEY = path.join(PROJECT_ROOT, '.cws-credentials', 'private-key.pem');
+
+const CHROME_CANDIDATES = [
+  process.env.CHROME_PATH,
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/usr/bin/google-chrome',
+  '/usr/bin/chromium-browser',
+  '/usr/bin/chromium',
+].filter(Boolean);
+
+function findChrome() {
+  for (const candidate of CHROME_CANDIDATES) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Pack DIST_DIR into a signed CRX3 file using Chrome's --pack-extension.
+ * Required after opting in to Verified CRX Uploads on the Chrome Web Store:
+ * uploads must match the public key registered with Google. Returns the
+ * path to the .crx file and throws when the key or Chrome is missing;
+ * main() skips signing altogether when there is no key.
+ */
+function signCrx(version) {
+  if (!fs.existsSync(CWS_PRIVATE_KEY)) {
+    throw new Error(
+      'CWS signing key not found at ' + path.relative(PROJECT_ROOT, CWS_PRIVATE_KEY) + '. ' +
+      'Restore the .cws-credentials/ directory from your encrypted backup before building.'
+    );
+  }
+  const chrome = findChrome();
+  if (!chrome) {
+    throw new Error(
+      'Could not locate chrome executable. Set CHROME_PATH env var to your Chrome binary path.'
+    );
+  }
+
+  // chrome --pack-extension writes <folder>.crx (and a fresh <folder>.pem if
+  // no key is supplied) NEXT TO the input folder. We want the output named
+  // mcpm-<version>-chrome.crx at PROJECT_ROOT, so we move it after.
+  //
+  // --user-data-dir is NOT optional here. Packing still starts a real Chrome,
+  // and without this it starts against the DEFAULT profile, where it contends
+  // with the singleton lock held by any other Chrome (a browser the user has
+  // open, or the previous pack still shutting down). That surfaces as an early
+  // startup failure, "Invalid value for default locale - locale name must be a
+  // string", and exit status 22, which reads like a manifest problem and is
+  // not one. It failed 2 of 4 release builds before this, with the same tree
+  // packing fine moments later. A throwaway profile removes the contention.
+  // Signing identity is unaffected: that comes from --pack-extension-key.
+  const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcpm-pack-'));
+  let result;
+  try {
+    result = spawnSync(chrome, [
+      '--pack-extension=' + DIST_DIR,
+      '--pack-extension-key=' + CWS_PRIVATE_KEY,
+      '--user-data-dir=' + profileDir,
+      '--no-first-run',
+      '--no-message-box',
+    ], {
+      stdio: 'inherit',
+    });
+  } finally {
+    fs.rmSync(profileDir, { recursive: true, force: true });
+  }
+  if (result.status !== 0) {
+    throw new Error('chrome --pack-extension failed (status ' + result.status + ')');
+  }
+
+  const producedCrx = DIST_DIR + '.crx';
+  if (!fs.existsSync(producedCrx)) {
+    throw new Error('Expected CRX not found at ' + producedCrx);
+  }
+  const finalCrxName = `mcpm-${version}-chrome.crx`;
+  const finalCrxPath = path.join(PROJECT_ROOT, finalCrxName);
+  if (fs.existsSync(finalCrxPath)) fs.unlinkSync(finalCrxPath);
+  fs.renameSync(producedCrx, finalCrxPath);
+  return finalCrxPath;
+}
+
+// ---- Main ----------------------------------------------------------------
+
+function main() {
+  console.log('[build-chrome] Reading source manifest...');
+  const srcManifest = readJSON(SRC_MANIFEST);
+  if (srcManifest.manifest_version !== 3) {
+    throw new Error(`Source manifest must be MV3 (got ${srcManifest.manifest_version})`);
+  }
+  const version = srcManifest.version;
+  const srcBackgroundScripts =
+    (srcManifest.background && srcManifest.background.scripts) || [];
+  if (srcBackgroundScripts.length === 0) {
+    throw new Error('Source manifest has no background.scripts to import.');
+  }
+
+  console.log('[build-chrome] Cleaning', path.relative(PROJECT_ROOT, DIST_DIR));
+  rimraf(DIST_DIR);
+  fs.mkdirSync(DIST_DIR, { recursive: true });
+
+  console.log('[build-chrome] Copying source tree...');
+  for (const dir of COPY_DIRS) {
+    const src = path.join(PROJECT_ROOT, dir);
+    if (!fs.existsSync(src)) {
+      console.warn(`[build-chrome]   skip missing dir: ${dir}`);
+      continue;
+    }
+    copyDir(src, path.join(DIST_DIR, dir));
+  }
+  for (const file of COPY_FILES) {
+    const src = path.join(PROJECT_ROOT, file);
+    if (fs.existsSync(src)) fs.copyFileSync(src, path.join(DIST_DIR, file));
+  }
+
+  console.log('[build-chrome] Transforming manifest → MV3...');
+  const mv3 = transformManifest(srcManifest);
+  writeJSON(path.join(DIST_DIR, 'manifest.json'), mv3);
+
+  console.log('[build-chrome] Generating service_worker.js...');
+  fs.writeFileSync(
+    path.join(DIST_DIR, 'service_worker.js'),
+    generateServiceWorker(srcBackgroundScripts)
+  );
+
+  console.log('[build-chrome] Injecting browser polyfill into HTML pages...');
+  // Each entry: [path-from-DIST_DIR, depth-back-to-root].
+  // Depth 1 means the HTML file lives in a single subdirectory and uses
+  // ../lib/browser-polyfill.js to reach the polyfill.
+  const HTML_PAGES = [
+    ['popup/popup.html', 1],
+    ['options/options.html', 1],
+    ['offscreen/offscreen.html', 1],
+    ['captcha/captcha.html', 1],
+  ];
+  for (const [rel, depth] of HTML_PAGES) {
+    injectPolyfillIntoHtml(path.join(DIST_DIR, rel), depth);
+  }
+
+  console.log('[build-chrome] Validating output...');
+  const expected = ['manifest.json', 'service_worker.js', POLYFILL_REL];
+  for (const rel of expected) {
+    const p = path.join(DIST_DIR, rel);
+    if (!fs.existsSync(p)) throw new Error('Missing in output: ' + rel);
+  }
+  // Sanity: every script the SW imports must exist in the output.
+  for (const s of srcBackgroundScripts) {
+    const p = path.join(DIST_DIR, s);
+    if (!fs.existsSync(p)) throw new Error('SW imports missing file: ' + s);
+  }
+
+  // Without the signing key (any checkout of the public source) stop at the
+  // unpacked build, which loads as it is via "Load unpacked". A release still
+  // fails without a CRX: the release tooling checks that the file exists.
+  if (!fs.existsSync(CWS_PRIVATE_KEY)) {
+    console.log('[build-chrome] Done, unsigned: no signing key at ' +
+      path.relative(PROJECT_ROOT, CWS_PRIVATE_KEY) + '.');
+    console.log(`  Unpacked: ${path.relative(PROJECT_ROOT, DIST_DIR)}`);
+    return;
+  }
+
+  console.log('[build-chrome] Signing CRX...');
+  const crxPath = signCrx(version);
+
+  console.log(`[build-chrome] Done.`);
+  console.log(`  Unpacked: ${path.relative(PROJECT_ROOT, DIST_DIR)}`);
+  console.log(`  Signed:   ${path.relative(PROJECT_ROOT, crxPath)}`);
+}
+
+try {
+  main();
+} catch (err) {
+  console.error('[build-chrome] FAILED:', err.message);
+  process.exit(1);
+}

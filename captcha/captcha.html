@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; frame-src https://verify.proton.me https://*.hcaptcha.com; style-src 'self';">
+  <link rel="stylesheet" href="captcha.css">
+</head>
+<body>
+  <div class="captcha-container">
+    <div class="captcha-header">
+      <img src="../icons/icon-32.png" alt="" class="captcha-icon">
+      <h1 class="captcha-title" data-i18n="humanVerification">Human Verification</h1>
+    </div>
+    <p class="captcha-desc" data-i18n="captchaDescription">Proton requires you to complete a CAPTCHA before signing in.</p>
+    <div id="captcha-frame-wrap" class="captcha-frame-wrap">
+      <div id="captcha-loading" class="captcha-loading">
+        <div class="spinner"></div>
+        <p data-i18n="loadingVerification">Loading verification...</p>
+      </div>
+      <iframe id="captcha-iframe" class="captcha-iframe"></iframe>
+    </div>
+    <p id="captcha-status" class="captcha-status"></p>
+  </div>
+  <script src="../lib/i18n.js"></script>
+  <script src="captcha.js"></script>
+</body>
+</html>

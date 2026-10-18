@@ -1,0 +1,1198 @@
+:root {
+  --purple: #6D4AFF;
+  --bg: #FFFFFF;
+  --bg-secondary: #F5F5F5;
+  --bg-hover: #EEEEEE;
+  --text: #0C0C14;
+  --text-secondary: #706D6B;
+  --text-muted: #9AA0A6;
+  --border: #E6E6E6;
+}
+
+body[data-color-scheme="dark"] {
+  --bg: #1B1340;
+  --bg-secondary: #251A4A;
+  --bg-hover: #2F2360;
+  --text: #FFFFFF;
+  --text-secondary: #B4B0CC;
+  --text-muted: #8884A2;
+  --border: #3D3566;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+  margin: 0;
+  padding: 0;
+}
+
+.options-container {
+  max-width: 400px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+h1 {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 20px;
+}
+
+h2 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--purple);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 20px;
+  margin-bottom: 10px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-section {
+  margin-top: 16px;
+}
+
+.settings-section > summary {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--purple);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+
+.settings-section > summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-section > summary::before {
+  content: '\25B6';
+  font-size: 9px;
+  transition: transform 0.15s;
+}
+
+.settings-section[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.settings-section > summary:hover {
+  color: var(--text);
+}
+
+.settings-section > .option-group:first-of-type {
+  margin-top: 10px;
+}
+
+.option-group {
+  margin-bottom: 12px;
+}
+
+.option-group > label:not(.checkbox-label) {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 6px;
+  color: var(--text-secondary);
+}
+
+.option-sub {
+  padding-left: 24px;
+}
+
+.option-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.option-row-spaced {
+  margin-top: 6px;
+}
+
+select {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.checkbox-label input[type="checkbox"] {
+  accent-color: var(--purple);
+  width: 16px;
+  height: 16px;
+}
+
+input[type="range"] {
+  flex: 1;
+  accent-color: var(--purple);
+  height: 4px;
+}
+
+.range-value {
+  font-size: 12px;
+  color: var(--text-secondary);
+  min-width: 32px;
+  text-align: right;
+}
+
+.range-input {
+  width: 58px;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  text-align: right;
+  -moz-appearance: textfield;
+}
+
+.range-input::-webkit-outer-spin-button,
+.range-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.range-input:focus {
+  outline: none;
+  border-color: var(--purple);
+}
+
+.range-max {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-left: 2px;
+  white-space: nowrap;
+}
+
+.actions-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.actions-sortable {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+
+.action-sort-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  user-select: none;
+  transition: background 0.15s, box-shadow 0.15s;
+  position: relative;
+}
+
+.action-sort-item:hover {
+  background: var(--bg-hover);
+}
+
+.action-sort-item.dragging {
+  opacity: 0.6;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.action-sort-handle {
+  font-size: 14px;
+  color: var(--text-secondary);
+  cursor: grab;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.action-sort-handle:active {
+  cursor: grabbing;
+}
+
+.action-sort-item input[type="checkbox"] {
+  accent-color: var(--purple);
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.action-sort-label {
+  font-size: 12px;
+  color: var(--text);
+  flex: 1;
+}
+
+.action-sort-btns {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.action-sort-arrow {
+  background: none;
+  border: none;
+  font-size: 8px;
+  line-height: 1;
+  padding: 1px 4px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  border-radius: 3px;
+}
+
+.action-sort-arrow:hover {
+  color: var(--purple);
+  background: var(--bg-hover);
+}
+
+.option-hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+.btn-test {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.btn-test:hover {
+  background: var(--border);
+}
+
+input[type="color"] {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px;
+  cursor: pointer;
+  background: var(--bg-secondary);
+}
+
+.color-preview {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border-radius: 10px;
+  vertical-align: middle;
+}
+
+.btn-action {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.btn-action:hover {
+  background: var(--border);
+}
+
+.btn-danger {
+  color: #dc3545;
+  border-color: #dc3545;
+}
+.btn-danger:hover {
+  background: #dc3545;
+  color: #fff;
+}
+
+.sync-status-row {
+  margin-top: 4px;
+  justify-content: flex-start;
+}
+.sync-status {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.version-info {
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 16px 0 8px;
+}
+
+.legal-notices {
+  margin-top: 8px;
+  padding: 16px 4px 24px;
+  border-top: 1px solid var(--border);
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+.legal-notices p {
+  margin: 0 0 10px;
+}
+.legal-notices p:last-child {
+  margin-bottom: 0;
+}
+.legal-notices a {
+  color: var(--text-muted);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.legal-notices a:hover {
+  color: var(--text-primary);
+}
+
+/* Generic hidden utility. Used by JS to toggle visibility of option-groups
+ * (license entry vs. active block, premium banner, etc.). */
+.hidden {
+  display: none !important;
+}
+
+.hidden-file {
+  display: none;
+}
+
+.status {
+  margin-top: 16px;
+  font-size: 12px;
+  color: var(--purple);
+  min-height: 18px;
+}
+
+/* Account alignment */
+.account-alignment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.alignment-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--bg-secondary);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+.alignment-label {
+  flex: 1;
+  font-size: 13px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.alignment-slot {
+  width: 60px;
+  padding: 4px 6px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  text-align: center;
+}
+
+.alignment-source {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font-size: 11px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.alignment-date {
+  font-size: 9px;
+  opacity: 0.7;
+}
+
+.alignment-source.detected { color: #2ea44f; }
+.alignment-source.manual { color: var(--purple); }
+.alignment-source.fallback { color: #d29922; }
+
+.alignment-clear {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 14px;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+
+.alignment-clear:hover { color: var(--text); background: var(--border); }
+
+/* Custom CSS textarea */
+.custom-css-input {
+  width: 100%;
+  min-height: 60px;
+  max-height: 200px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text);
+  font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+  outline: none;
+  tab-size: 2;
+}
+
+.custom-css-input:focus {
+  border-color: var(--purple);
+}
+
+/* ============================================================
+ * Premium / license UI
+ * ============================================================ */
+
+.premium-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 20px;
+  justify-content: space-between;
+  padding: 20px 24px;
+  margin: 12px 0 24px;
+  background: linear-gradient(135deg, #6D4AFF 0%, #936DFF 100%);
+  color: #fff;
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(109, 74, 255, 0.25);
+}
+.premium-banner__text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 280px;
+  min-width: 240px;
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 4px;
+  margin: -4px;
+  transition: background 0.15s;
+}
+.premium-banner__text:hover {
+  background: rgba(255, 255, 255, 0.08);
+  text-decoration: none;
+}
+.premium-banner__text strong {
+  font-size: 17px;
+  line-height: 1.3;
+}
+.premium-banner__text span {
+  font-size: 13px;
+  line-height: 1.4;
+  opacity: 0.9;
+}
+.premium-banner__actions {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.premium-banner__actions .btn-primary,
+.premium-banner__actions .btn-secondary {
+  white-space: nowrap;
+}
+
+.premium-status {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 8px 0 12px;
+}
+.premium-status__label {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.premium-status__value {
+  font-weight: 600;
+  font-size: 14px;
+}
+.premium-status__value--active {
+  color: #2e7d32;
+}
+.premium-status__value--trial {
+  color: #ef6c00;
+}
+.premium-status__value--expired {
+  color: #c62828;
+}
+
+.license-key-masked {
+  flex: 1;
+  background: var(--bg-secondary);
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+/* Validation block inside the active-license group */
+.license-validation {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.license-validation__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.license-validation__row + .license-validation__row {
+  margin-top: 10px;
+}
+/* Manage-subscription row: label on its own line, the two buttons grouped
+   below it (they don't fit beside the label without wrapping awkwardly). */
+#license-manage-row {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.license-manage-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.license-validation__label {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.license-validation__value {
+  font-size: 13px;
+  color: var(--text);
+  flex: 1;
+}
+.license-validation__notice {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.license-validation__notice--warning {
+  background: #fff8e1;
+  border: 1px solid #ffe082;
+  color: #5d4037;
+}
+.license-validation__notice--error {
+  background: #fff5f5;
+  border: 1px solid #ffc9c9;
+  color: #862e2e;
+}
+/* Information, no action needed (a scheduled cancel date) */
+.license-validation__notice--info {
+  background: #f3f0ff;
+  border: 1px solid #d9d0ff;
+  color: #3b2a99;
+}
+/* The outcome of a manual "Validate now", for a few seconds. It sits left of the
+   button, in the space the flexible value leaves, so the button does not move;
+   min-width: 0 lets a long translation wrap instead of pushing the button down. */
+.license-validation__result {
+  font-size: 13px;
+  min-width: 0;
+  text-align: right;
+}
+.license-validation__result--ok {
+  color: #2b7a3d;
+}
+.license-validation__result--failed {
+  color: #862e2e;
+}
+body[data-color-scheme="dark"] .license-validation__result--ok {
+  color: #69db7c;
+}
+body[data-color-scheme="dark"] .license-validation__result--failed {
+  color: #ff8787;
+}
+/* The support address inside the paused notice */
+.license-validation__notice a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+body[data-color-scheme="dark"] .license-validation__notice--warning {
+  background: #3d2f00;
+  border-color: #6b4f00;
+  color: #ffd166;
+}
+body[data-color-scheme="dark"] .license-validation__notice--error {
+  background: #3d1010;
+  border-color: #6b2222;
+  color: #ff8787;
+}
+body[data-color-scheme="dark"] .license-validation__notice--info {
+  background: #2a2152;
+  border-color: #4a3d8a;
+  color: #d6ccff;
+}
+
+.btn-secondary-light {
+  background: var(--bg-secondary);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.btn-secondary-light:hover {
+  background: var(--bg-hover);
+}
+.btn-secondary-light:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.btn-primary {
+  background: #fff;
+  color: var(--purple);
+  border: none;
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+}
+.premium-banner__actions .btn-primary:hover {
+  background: #f0edff;
+}
+/* Outside the banner the primary button is the purple one */
+#premium-section .btn-primary,
+body .btn-primary:not(.premium-banner__actions *) {
+  background: var(--purple);
+  color: #fff;
+}
+#premium-section .btn-primary:hover,
+body .btn-primary:not(.premium-banner__actions *):hover {
+  background: #5a3dd8;
+}
+
+.btn-secondary {
+  background: transparent;
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+}
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.btn-danger {
+  background: #c62828;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+}
+.btn-danger:hover {
+  background: #b71c1c;
+}
+
+.error-text {
+  color: #c62828;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+/* Premium-locked controls: dimmed and non-interactive on free tier. */
+.option-group.premium-locked {
+  position: relative;
+  opacity: 0.5;
+  pointer-events: none;
+}
+.option-group.premium-locked::after {
+  content: '🔒';
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+/* === Verification code pattern manager ============================ */
+
+/* small grey "(N)" count after the section title */
+.section-count {
+  margin-left: 4px;
+  color: var(--text-muted);
+  font-weight: 400;
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* the list itself: a stack with hairline dividers between rows */
+.patterns-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.patterns-list:empty::before {
+  content: 'No patterns yet';
+  display: block;
+  padding: 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+/* --- Quiet mail rules ---------------------------------------------------- */
+
+.quiet-rules-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Each rule is a <details>: collapsed it is a single line showing its name,
+   so a long list stays scannable. */
+.quiet-rule {
+  padding: 8px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.quiet-rule[open] {
+  padding-bottom: 12px;
+}
+
+.quiet-rule.is-disabled {
+  opacity: 0.55;
+}
+
+.quiet-rule-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.quiet-rule-head::-webkit-details-marker { display: none; }
+
+/* Own disclosure triangle, so it sits before the enable checkbox. */
+.quiet-rule-head::before {
+  content: '▸';
+  color: var(--text-muted);
+  font-size: 10px;
+  transition: transform 0.15s ease;
+}
+
+.quiet-rule[open] > .quiet-rule-head::before {
+  transform: rotate(90deg);
+}
+
+.quiet-rule-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Broken or inert rules are flagged on the collapsed line too. */
+.quiet-rule-flag {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--btn-text, #fff);
+  background: var(--error, #d9534f);
+}
+
+.quiet-rule-name-field {
+  margin-top: 10px;
+}
+
+.quiet-rule-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* Two columns on a roomy options page, one on a narrow one. */
+.quiet-rule-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.quiet-rule-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.quiet-rule-field input.is-invalid {
+  border-color: var(--error, #d9534f);
+}
+
+.quiet-rule-error {
+  font-size: 11px;
+  color: var(--error, #d9534f);
+}
+
+.quiet-rule-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+}
+
+.quiet-rule-warning {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Test-this-rule row */
+.quiet-rule-test {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.quiet-rule-test-result {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.quiet-rule-test-result.is-match { color: var(--text); }
+.quiet-rule-test-result.is-warning { color: var(--error, #d9534f); }
+
+.quiet-rule-test-matches {
+  margin: 4px 0 0;
+  padding-left: 16px;
+  color: var(--text-muted);
+}
+
+/* Per-condition tallies shown when the rule as a whole matched nothing. */
+.quiet-rule-test-breakdown {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.quiet-rule-test-matches li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quiet-rules-warning {
+  border-left: 3px solid var(--purple, #6D4AFF);
+  padding-left: 8px;
+}
+
+.pattern-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--bg);
+  transition: background 0.12s ease;
+}
+
+.pattern-row + .pattern-row {
+  border-top: 1px solid var(--border);
+}
+
+.pattern-row:hover {
+  background: var(--bg-secondary);
+}
+
+.pattern-row.is-disabled .pattern-name,
+.pattern-row.is-disabled .pattern-regex input {
+  opacity: 0.55;
+}
+
+/* head row: checkbox + label on the left, badge + actions pinned right */
+.pattern-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+}
+
+.pattern-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1 1 auto;
+  min-width: 0;
+  cursor: pointer;
+  margin: 0;
+}
+
+.pattern-toggle input[type="checkbox"] {
+  margin: 0;
+  flex: none;
+  accent-color: var(--purple);
+}
+
+.pattern-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* "MOD" pill: only visible when .pattern-row.is-modified */
+.pattern-badge {
+  display: none;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  flex: none;
+  cursor: help;
+}
+
+.pattern-row.is-modified .pattern-badge {
+  display: inline-block;
+  color: var(--purple);
+  border-color: var(--purple);
+}
+
+.pattern-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  margin-left: auto;
+}
+
+.pattern-icon-btn {
+  appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.pattern-icon-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.pattern-icon-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.pattern-icon-btn--danger:hover:not(:disabled) {
+  color: var(--purple);
+  border-color: var(--purple);
+}
+
+/* regex input: full width, monospace, readonly by default */
+.pattern-regex {
+  display: block;
+}
+
+.pattern-regex input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 7px;
+  font-size: 12px;
+  background: var(--bg-secondary);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, 'Menlo', 'Consolas', monospace;
+  word-break: break-all;
+  box-sizing: border-box;
+}
+
+.pattern-regex input[readonly] {
+  cursor: default;
+}
+
+.pattern-row.is-editing .pattern-regex input,
+.pattern-regex input:focus:not([readonly]) {
+  background: var(--bg);
+  border-color: var(--purple);
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--purple) 20%, transparent);
+}
+
+.pattern-regex input.invalid {
+  border-color: var(--purple);
+  background: color-mix(in srgb, var(--purple) 8%, transparent);
+}
+
+/* monospace utility usable on the add-form regex input too */
+input.mono,
+.mono {
+  font-family: ui-monospace, SFMono-Regular, 'Menlo', 'Consolas', monospace;
+  font-size: 12px;
+}
+
+/* === Add-pattern form ============================================== */
+.pattern-add {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+}
+
+.pattern-add input[type="text"] {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 13px;
+  background: var(--bg);
+  color: var(--text);
+  box-sizing: border-box;
+}
+
+.pattern-add input[type="text"]:focus {
+  outline: none;
+  border-color: var(--purple);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--purple) 20%, transparent);
+}
+
+.pattern-add input[type="text"].invalid {
+  border-color: var(--purple);
+  background: color-mix(in srgb, var(--purple) 8%, transparent);
+}
+
+.pattern-add-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.pattern-add-hint {
+  margin: 0;
+  flex: 1 1 auto;
+}
+
+.pattern-add-hint code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 11px;
+}
+
+/* primary "+ Add" button, distinct from the muted .btn-test */
+.btn-primary {
+  background: var(--purple);
+  color: #ffffff;
+  border: 1px solid var(--purple);
+  border-radius: 4px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  flex: none;
+  transition: filter 0.12s ease, transform 0.05s ease;
+}
+
+.btn-primary:hover {
+  filter: brightness(1.08);
+}
+
+.btn-primary:active {
+  transform: translateY(1px);
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  filter: none;
+}
