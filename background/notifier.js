@@ -7,7 +7,8 @@ const ProtonNotifier = (() => {
   const _notifiedIds = new Set();
   const MAX_TRACKED_IDS = 200;
 
-  // Map notification ID → { messageId, accountId } for click actions.
+  // Map notification ID → { messageId, accountId } for click actions (a
+  // multi-message notification has no single message: { accountId } only).
   // Held in memory AND in storage.session, because the notification outlives
   // the worker that created it: MV3 tears the background down after ~30s idle
   // while the OS keeps showing the notification for minutes (one created at
@@ -114,6 +115,17 @@ const ProtonNotifier = (() => {
     } catch (_) { /* best effort */ }
   }
 
+  // Load before writing: _persistNotifData writes the whole map, so without
+  // the merge this worker would wipe entries other workers stored for
+  // notifications still on screen. Saved before the notification exists, so
+  // a teardown right after the create still leaves a clickable entry behind.
+  async function _rememberNotification(notifId, data) {
+    await _ensureDataLoaded();
+    _notificationData.set(notifId, data);
+    _trimNotificationData();
+    await _persistNotifData();
+  }
+
   // Uses the shared getSettings() from constants.js
 
   /**
@@ -138,8 +150,10 @@ const ProtonNotifier = (() => {
     if (s.notificationsEnabled === false) return;
     if (!messages || messages.length === 0) return;
 
-    // Check per-account notification setting
-    if (accountId) {
+    // Per-account notification switch. A Pro setting: without Premium it
+    // stays stored (it applies again with Premium) but notifications are on.
+    const premium = typeof ProtonPremium === 'undefined' || ProtonPremium.isPremium();
+    if (accountId && premium) {
       const account = ProtonAccounts.getAccount(accountId);
       if (account && account.notificationsEnabled === false) return;
     }
@@ -165,7 +179,6 @@ const ProtonNotifier = (() => {
     // OS notification sound (or none, if the OS is silent). A rule can mute
     // it independently of the popup notification, so this is deliberately
     // keyed off everything that arrived, not just what we display.
-    const premium = typeof ProtonPremium === 'undefined' || ProtonPremium.isPremium();
     if (premium && s.notificationSoundEnabled && soundAllowed) {
       playSound(s.notificationSound || 'chime', s.notificationVolume || 50);
     }
@@ -202,18 +215,10 @@ const ProtonNotifier = (() => {
       }
 
       const notifId = `proton-conv-${msg.ConversationID || msg.ID}`;
-      // Load before writing: _persistNotifData writes the whole map, so
-      // without the merge this worker would wipe entries other workers stored
-      // for notifications still on screen.
-      await _ensureDataLoaded();
-      _notificationData.set(notifId, {
+      await _rememberNotification(notifId, {
         messageId: msg.ID,
         accountId: accountId || msg._accountId,
       });
-      _trimNotificationData();
-      // Saved before the notification exists, so a teardown right after the
-      // create still leaves a clickable entry behind.
-      await _persistNotifData();
 
       await browser.notifications.create(notifId, {
         type: 'basic',
@@ -233,7 +238,13 @@ const ProtonNotifier = (() => {
         if (newMessages.length > 3) message += ' ' + ProtonI18n.t('andNMore', newMessages.length - 3);
       }
 
-      const notifId = 'proton-multi-' + Date.now();
+      // The account is in the id: accounts are polled in parallel, so two of
+      // them can announce in the same millisecond, and a create under an id
+      // already on screen replaces that notification.
+      const notifId = 'proton-multi-' + (accountId ? accountId + '-' : '') + Date.now();
+      // No single message to mark or archive, but the account to open.
+      await _rememberNotification(notifId, { accountId: accountId || newMessages[0]._accountId });
+
       await browser.notifications.create(notifId, {
         type: 'basic',
         iconUrl: 'icons/icon-128.png',
@@ -243,9 +254,27 @@ const ProtonNotifier = (() => {
     }
   }
 
+  // What a click needs loaded before it acts: Premium (the click action is a
+  // Pro setting) and the accounts (the message to open, mark read or
+  // archive). background.js hands it over (init). A click on a notification
+  // from an earlier background wakes a new one and lands here at once,
+  // before either is loaded: a Pro user's choice read as the free default.
+  // Waited for, but never for long: a click must not hang on a stuck init.
+  let _whenReady = null;
+  const READY_WAIT_MS = 5000;
+
+  function _readyForClick() {
+    if (!_whenReady) return Promise.resolve();
+    let timer;
+    const late = new Promise((resolve) => { timer = setTimeout(resolve, READY_WAIT_MS); });
+    const ready = Promise.resolve().then(_whenReady).catch(() => {});
+    return Promise.race([ready, late]).finally(() => clearTimeout(timer));
+  }
+
   async function handleClick(notificationId) {
     browser.notifications.clear(notificationId);
 
+    await _readyForClick();
     const s = await getSettings();
     // Free tier always uses the default 'openMessage' behavior; premium users
     // can customize (openInbox, openMessage, etc.) via settings.
@@ -260,22 +289,31 @@ const ProtonNotifier = (() => {
       await _persistNotifData();
     }
 
+    // Each notification is for one account (the poller announces per
+    // account). Without its id, getMailUrl resolves to /u/0/, so a click on a
+    // second account's notification opened the first account's mailbox.
+    const accountId = msgData ? msgData.accountId : undefined;
+
     switch (action) {
       case 'openInbox':
-        browser.tabs.create({ url: ProtonAccounts.getMailUrl() });
+        browser.tabs.create({ url: ProtonAccounts.getMailUrl(null, accountId) });
         break;
 
       case 'openMessage':
         if (notificationId.startsWith('proton-conv-')) {
+          // As the popup's "Open in Proton Mail": that account's session, the
+          // conversation expanded at the message.
           const convId = notificationId.replace('proton-conv-', '');
-          browser.tabs.create({ url: ProtonAccounts.getMailUrl(convId) });
+          browser.tabs.create({
+            url: ProtonAccounts.getMailUrl(convId, accountId, msgData ? msgData.messageId : undefined),
+          });
         } else {
-          browser.tabs.create({ url: ProtonAccounts.getMailUrl() });
+          browser.tabs.create({ url: ProtonAccounts.getMailUrl(null, accountId) });
         }
         break;
 
       case 'markRead':
-        if (msgData) {
+        if (msgData && msgData.messageId) {
           try {
             await ProtonAccounts.markAsRead(msgData.accountId, [msgData.messageId]);
             ProtonPoller.poll();
@@ -290,7 +328,7 @@ const ProtonNotifier = (() => {
         break;
 
       case 'archive':
-        if (msgData) {
+        if (msgData && msgData.messageId) {
           try {
             await ProtonAccounts.archiveMessages(msgData.accountId, [msgData.messageId]);
             ProtonPoller.poll();
@@ -314,10 +352,13 @@ const ProtonNotifier = (() => {
   /**
    * One-time desktop notification when an account permanently loses its
    * session ('reauth': invalid refresh token) or access ('disabled':
-   * account deleted/disabled server-side). Clicking opens nothing special:
-   * the popup shows the matching "Sign in" banner.
+   * account deleted/disabled server-side). The popup shows the matching
+   * "Sign in" banner. A click acts as on a notification for several new
+   * messages: that account's mailbox, no message to mark or archive. Without
+   * the account it opened /u/0/, another account's mailbox.
+   * @param {string} [accountId] - Account ID (for click actions).
    */
-  async function notifyAuthError(accountEmail, reason) {
+  async function notifyAuthError(accountEmail, reason, accountId) {
     if (_authErrorNotified.has(accountEmail)) return;
     _authErrorNotified.add(accountEmail);
 
@@ -327,7 +368,9 @@ const ProtonNotifier = (() => {
     const body = reason === 'disabled'
       ? ProtonI18n.t('notifAccountDisabled')
       : ProtonI18n.t('notifSignInAgain');
-    await browser.notifications.create(`proton-autherror-${accountEmail}`, {
+    const notifId = `proton-autherror-${accountEmail}`;
+    if (accountId) await _rememberNotification(notifId, { accountId });
+    await browser.notifications.create(notifId, {
       type: 'basic',
       iconUrl: 'icons/icon-128.png',
       title: accountEmail,
@@ -344,7 +387,9 @@ const ProtonNotifier = (() => {
     await _persist();
   }
 
-  function init() {
+  /** @param {Function} [whenReady] resolves once a click can act (see _readyForClick). */
+  function init(whenReady) {
+    _whenReady = typeof whenReady === 'function' ? whenReady : null;
     browser.notifications.onClicked.addListener(handleClick);
   }
 

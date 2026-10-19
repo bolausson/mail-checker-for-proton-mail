@@ -175,7 +175,7 @@ function buildAccounts(server) {
   const names = ['_monitoredQueryIds', 'getMonitoredMessages', 'getMonitoredUnreadCount',
     'getMonitoredLabelIds', '_pruneStaleMonitoredIds', '_recordMonitorConfig', '_recordLeak',
     'checkMonitoredAgainstCounts', 'importAccountSettings', 'updateAccountSettings',
-    '_exportEntry', '_scopeKey', '_recordReadInUnread'];
+    '_exportEntry', '_scopeKey', '_recordReadInUnread', '_folderMode', '_proSettingsApply'];
   const body = names.map(n => lift(ACCOUNTS, n)).join('\n') +
     '\nconst _monitoredIdsConfirmed = new Map();' +
     '\nconst _STALE_MONITOR_IDS_MAX = 200;' +

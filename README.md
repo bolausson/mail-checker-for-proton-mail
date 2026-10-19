@@ -44,7 +44,8 @@ compares the two.
 - A check every 15 minutes, and whenever you click **Refresh**
 - Message list and plain-text reading in the popup
 - Verification codes (2FA/OTP) in new mail shown as a click-to-copy badge
-- Open in Proton Mail, mark as read, export as `.eml` (attachments included with Pro)
+- Open in Proton Mail, mark as read or unread, export as `.eml` (attachments included
+  with Pro)
 - Sign-in with a password, a separate mailbox password, an authenticator app or a
   security key
 - Keyboard navigation, 28 interface languages, and the Classic theme, light or dark to
@@ -72,7 +73,8 @@ servers.
 
 **14-day free trial:** click **Start 14-Day Free Trial** at the top of the extension's
 settings. It needs no payment details and is offered once. When it ends, the free limits
-return.
+return. Pro settings go back to their defaults, and your own choices return when you
+subscribe.
 
 ## Subscribing / activating
 
@@ -119,7 +121,7 @@ the Firefox files (needs bash and 7-Zip's `7z`).
 ## Privacy
 
 - Mail is decrypted locally with OpenPGP.js. There are no analytics and no telemetry.
-- Sign-in uses Proton's SRP protocol, so your password is never sent or stored.
+- Sign-in uses Proton's SRP protocol, so your password never leaves your device.
 - Besides Proton (`*.proton.me`), the extension contacts the license server only when you
   activate or hold a Pro license key, hCaptcha only during Proton's human verification,
   and other servers only when you load a message's remote content (once, or always through

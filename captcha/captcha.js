@@ -12,16 +12,21 @@
     ProtonI18n.applyTranslations();
   }
 
-  // Apply color scheme from settings
-  try {
-    const stored = await browser.storage.local.get('settings');
-    const scheme = (stored.settings && stored.settings.colorScheme) || 'auto';
+  // Apply color scheme from settings. It is a Pro setting, so without
+  // Premium the page follows the system, like the popup (lib/pro-settings.js).
+  // Not awaited: the verification below must not wait for the background.
+  Promise.all([
+    browser.storage.local.get('settings'),
+    browser.runtime.sendMessage({ type: 'GET_PREMIUM_STATUS' }).catch(() => null),
+  ]).then(([stored, premiumStatus]) => {
+    const settings = ProtonProSettings.inEffect(stored.settings, !!(premiumStatus && premiumStatus.premium));
+    const scheme = settings.colorScheme || 'auto';
     let resolved = scheme;
     if (resolved === 'auto') {
       resolved = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     }
     document.body.setAttribute('data-color-scheme', resolved);
-  } catch (e) { /* ignore */ }
+  }).catch(() => { /* ignore */ });
 
   const iframe = document.getElementById('captcha-iframe');
   const loading = document.getElementById('captcha-loading');

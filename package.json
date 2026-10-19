@@ -4,8 +4,8 @@
   "description": "Firefox and Chrome extension for Proton Mail",
   "license": "SEE LICENSE IN LICENSE.md",
   "scripts": {
-    "lint": "eslint background/ popup/ options/ captcha/ lib/i18n.js lib/dialog.js",
-    "lint:fix": "eslint --fix background/ popup/ options/ captcha/ lib/i18n.js",
+    "lint": "eslint background/ popup/ options/ captcha/ lib/i18n.js lib/dialog.js lib/pro-settings.js",
+    "lint:fix": "eslint --fix background/ popup/ options/ captcha/ lib/i18n.js lib/pro-settings.js",
     "lint:amo": "bash scripts/lint-amo.sh",
     "test": "vitest run",
     "test:watch": "vitest"

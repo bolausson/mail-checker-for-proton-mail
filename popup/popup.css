@@ -282,6 +282,17 @@ body.hide-premium-ui #preview-attachments {
   font-size: 14px;
   opacity: 0.9;
 }
+/* Its pill in the status bar: dimmed alike, a lock in place of a count */
+.account-pill.account-locked {
+  opacity: 0.6;
+  filter: grayscale(0.3);
+}
+.account-pill.account-locked:hover {
+  opacity: 0.85;
+}
+.account-pill-locked-icon {
+  font-size: 9px;
+}
 
 .upgrade-btn {
   color: #ffb300;

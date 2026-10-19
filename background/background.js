@@ -65,21 +65,34 @@
   // must happen synchronously during the IIFE.
   let _initPromise = null;
   let _initDone = false;
+  // Premium, the accounts and their /u/N/ slots are loaded: all a notification
+  // click needs to act on, well before the rest of the init (no network in
+  // between).
+  let _markLoaded;
+  const _loaded = new Promise((resolve) => { _markLoaded = resolve; });
 
   async function _initialize() {
-    ProtonNotifier.init();
+    ProtonNotifier.init(() => _loaded);
     await ProtonDND.init();
     await ProtonPremium.init();
     // Fast phase only: load accounts + restore the cached snapshot. Key-unlock and
     // network enrichment run in the slow phase below, so GET_STATE can serve the
     // cached email list without waiting ~1.5s for keys to decrypt.
     await ProtonAccounts.initFast();
-    ProtonAccounts.initUrlDetection();
+    // Awaited (a storage read, no network): a notification click waits for
+    // _markLoaded and then builds its link from the account to /u/N/ map this
+    // loads. Until the map is in, an account resolves by its list position,
+    // which need not be its web slot, so the click could open another
+    // account's mailbox.
+    try { await ProtonAccounts.initUrlDetection(); } catch (_) { /* links by list position */ }
+    _markLoaded();
 
-    // Apply synced account settings on startup (if sync enabled)
+    // Apply synced account settings on startup (if sync enabled). Sync is
+    // Pro: after the trial the switch stays stored, but nothing is taken from
+    // sync until Premium is back (lib/pro-settings.js).
     try {
       const { syncEnabled } = await browser.storage.local.get('syncEnabled');
-      if (syncEnabled) {
+      if (ProtonProSettings.syncInEffect(syncEnabled, ProtonPremium.isPremium())) {
         const synced = await browser.storage.sync.get('accountSettings');
         if (synced.accountSettings) {
           await ProtonAccounts.importAccountSettings(synced.accountSettings);
@@ -124,20 +137,33 @@
   }
 
   function ensureInitialized() {
-    if (!_initPromise) _initPromise = _initialize();
+    if (!_initPromise) {
+      _initPromise = _initialize();
+      // An init that failed before it got there is never retried: a click
+      // acts at once on what is loaded, rather than wait out its bound.
+      _initPromise.catch(() => _markLoaded());
+    }
     return _initPromise;
   }
 
   // Premium can flip without any message: a license check answering
   // "unpaid", a grace period running out, a trial ending. The poll interval
   // and the free tier's one-account polling follow isPremium(), so re-apply
-  // them now instead of at the next restart. Registered before init, which
-  // may already start a check.
-  ProtonPremium.onPremiumChange(() => {
+  // them now instead of at the next restart. So do the per-account folders:
+  // an account monitoring more than Inbox gets its new set fetched now.
+  // And so do the Pro settings (lib/pro-settings.js): the badge colour and
+  // DND repaint with the badge, a changed "emails per account" refetches the
+  // lists, and the quiet rules are re-evaluated now, not at the next poll.
+  // Registered before init, which may already start a check.
+  ProtonPremium.onPremiumChange((premium) => {
     ensureInitialized().then(async () => {
       if (!ProtonAccounts.hasAccounts()) return;
+      const rescoped = await ProtonAccounts.applyPremiumScope(premium);
       await ProtonPoller.start();
       ProtonPoller.refreshBadgeNow();
+      if (rescoped) ProtonPoller.poll();
+      else ProtonPoller.syncListLimit().catch(() => {});
+      ProtonPoller.reapplyQuietRules().catch(() => {});
     }).catch(err => console.warn('[ProtonMailChecker] Premium change handling failed:', err.message));
   });
 
@@ -417,6 +443,12 @@
 
     // DND status query only. Enable/disable remain premium
     'DND_GET_STATUS',
+
+    // Support asks free users for the diagnostic log too, so the popup's
+    // console capture has to reach it. The email cache (Settings, Data) is
+    // offered to everyone: without these, turning it off left the disk copy
+    // until the next browser start and "Clear cache" cleared nothing.
+    'DIAG_CAPTURE', 'SET_CACHE_ENABLED', 'CLEAR_MSG_CACHE',
 
     // Premium module itself
     'GET_PREMIUM_STATUS', 'START_TRIAL', 'OPEN_PAYMENT_PAGE', 'PREMIUM_RESYNC',
@@ -988,11 +1020,13 @@
         return true;
 
       case 'GET_MANAGE_URLS':
-        // Fetches fresh Paddle customer-portal URLs for the active
-        // subscription. URLs carry a ~24h JWT token. Never cache them
-        // beyond a single options-page interaction (see
-        // reference_paddle_manage_url memory). Serving the payment link
-        // while a payment is failing also starts quick follow-up checks.
+        // The Paddle customer-portal links for the stored subscription
+        // (premium.js getManageUrls). The proxy (contract 3) hands out only
+        // links without a sign-in token: the user signs in to the portal
+        // with the purchase email. A link Paddle does not give comes back as
+        // null. They are fetched fresh for each "Manage subscription"
+        // interaction and never persisted. Serving the payment link while a
+        // payment is failing also starts quick follow-up checks.
         ProtonPremium.getManageUrls()
           .then(sendResponse)
           .catch(() => sendResponse({ ok: false, error: 'internal_error' }));

@@ -17,8 +17,9 @@
  * the message can legitimately return.
  *
  * Pure and dependency-free: every function operates on an `account` object of
- * the shape { messages: Message[], unreadCount: number, _tombstones?: Map,
- * _convTombstones?: Map }. `now` is injectable for deterministic tests.
+ * the shape { messages: Message[], unreadCount: number, listLimit?: number,
+ * _tombstones?: Map, _convTombstones?: Map }. `now` is injectable for
+ * deterministic tests.
  */
 const ProtonTombstones = (function () {
   'use strict';
@@ -30,8 +31,27 @@ const ProtonTombstones = (function () {
     if (!account._convTombstones) account._convTombstones = new Map(); // convID -> expiry ts
   }
 
-  function _recomputeUnread(account) {
-    account.unreadCount = (account.messages || []).filter(m => m.Unread === 1).length;
+  /**
+   * Take the unread among `dropped` off the count, until the next poll
+   * brings Proton's own. Never recomputed from the list: the count comes
+   * from Proton's counts and the list holds at most "messages per account",
+   * so one mark-read would turn 30 unread into the 4 left in a list of 5.
+   */
+  function _dropUnread(account, dropped) {
+    const n = dropped.filter(m => m.Unread === 1).length;
+    if (n) account.unreadCount = Math.max(0, (account.unreadCount || 0) - n);
+    if (dropped.length) _listShort(account);
+  }
+
+  /**
+   * The list now holds fewer than it was fetched for: have the next poll
+   * fetch it again (the poller refetches a list whose listLimit is not the
+   * setting). The count cannot say so: it stays in step with Proton's, so
+   * the event poll would see no change, and with "messages per account"
+   * below the unread a list of 5 shrank with every action and stayed short.
+   */
+  function _listShort(account) {
+    account.listLimit = null;
   }
 
   /** Removal action succeeded: drop the IDs from the cache now + tombstone them. */
@@ -41,8 +61,9 @@ const ProtonTombstones = (function () {
     const expiry = (now || Date.now()) + TTL_MS;
     for (const id of messageIds) account._tombstones.set(id, expiry);
     const idSet = new Set(messageIds);
-    account.messages = (account.messages || []).filter(m => !idSet.has(m.ID));
-    _recomputeUnread(account);
+    const msgs = account.messages || [];
+    _dropUnread(account, msgs.filter(m => idSet.has(m.ID)));
+    account.messages = msgs.filter(m => !idSet.has(m.ID));
   }
 
   /** Snooze succeeded: drop the conversations' messages now + tombstone by conversation. */
@@ -52,8 +73,9 @@ const ProtonTombstones = (function () {
     const expiry = (now || Date.now()) + TTL_MS;
     for (const cid of conversationIds) account._convTombstones.set(cid, expiry);
     const convSet = new Set(conversationIds);
-    account.messages = (account.messages || []).filter(m => !convSet.has(m.ConversationID));
-    _recomputeUnread(account);
+    const msgs = account.messages || [];
+    _dropUnread(account, msgs.filter(m => convSet.has(m.ConversationID)));
+    account.messages = msgs.filter(m => !convSet.has(m.ConversationID));
   }
 
   /** Reverse action (undo): drop tombstones so the message can return on the next poll. */
@@ -103,10 +125,13 @@ const ProtonTombstones = (function () {
         else suppressConvs.add(cid);
       }
     }
+    // Only the list is filtered. The count was just set from Proton's
+    // counts, which the list's lag does not touch. A list filtered short is
+    // fetched again by the next poll, once the server has caught up.
     if (suppressIds.size || suppressConvs.size) {
       account.messages = msgs.filter(
         m => !suppressIds.has(m.ID) && !suppressConvs.has(m.ConversationID));
-      _recomputeUnread(account);
+      _listShort(account);
     }
   }
 

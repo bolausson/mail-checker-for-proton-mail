@@ -102,6 +102,7 @@ module.exports = [
         ProtonEmailCanvas: 'readonly',
         ProtonAccountLimit: 'readonly',
         ProtonNotificationRules: 'readonly',
+        ProtonProSettings: 'readonly',
         ProtonI18n: 'readonly',
         ProtonDialog: 'readonly',
         module: 'readonly',

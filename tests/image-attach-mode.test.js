@@ -83,15 +83,17 @@ describe('when embedding is impossible or wrong', () => {
 });
 
 describe('the default is the same everywhere it is written down', () => {
-  // Three separate literals decide it: the settings defaults, the value the
-  // options page selects when nothing is stored, and the fallback the composer
-  // applies. If they drift, Settings shows one mode while sending does another,
-  // which is a quieter version of the bug this whole feature came from.
+  // Three separate literals decide it: the settings defaults (shared, in
+  // lib/pro-settings.js), the value the options page selects when nothing is
+  // stored, and the fallback the composer applies. If they drift, Settings
+  // shows one mode while sending does another, which is a quieter version of
+  // the bug this whole feature came from.
   const OPTIONS = readFileSync(join(__dirname, '..', 'options', 'options.js'), 'utf-8');
+  const DEFAULTS = readFileSync(join(__dirname, '..', 'lib', 'pro-settings.js'), 'utf-8');
 
   const defaults = () => {
     const found = [
-      /imageAttachMode:\s*'([a-z]+)'/.exec(OPTIONS),
+      /imageAttachMode:\s*'([a-z]+)'/.exec(DEFAULTS),
       /imageAttachMode\.value\s*=\s*s\.imageAttachMode\s*\|\|\s*'([a-z]+)'/.exec(OPTIONS),
       /_settings\.imageAttachMode\s*\|\|\s*'([a-z]+)'/.exec(SRC),
     ];

@@ -136,6 +136,32 @@ describe('the summary line', () => {
   });
 });
 
+describe('isFirefox, for text that names the browser\'s own services', () => {
+  // The options page labelled the sync switch "(Firefox account)" in Chrome
+  // too. The test is the API only Gecko has, not the user agent.
+  function withBrowser(value, fn) {
+    const had = Object.prototype.hasOwnProperty.call(globalThis, 'browser');
+    const before = globalThis.browser;
+    globalThis.browser = value;
+    try { return fn(); } finally {
+      if (had) globalThis.browser = before; else delete globalThis.browser;
+    }
+  }
+
+  it('is true where runtime.getBrowserInfo exists (Firefox and its forks)', () => {
+    expect(withBrowser({ runtime: { getBrowserInfo: async () => ({ name: 'Firefox' }) } },
+      () => ProtonBrowserInfo.isFirefox())).toBe(true);
+  });
+
+  it('is false in Chrome, where browser is the aliased chrome object', () => {
+    expect(withBrowser({ runtime: { id: 'x' } }, () => ProtonBrowserInfo.isFirefox())).toBe(false);
+  });
+
+  it('is false, not a throw, without any extension API', () => {
+    expect(withBrowser(undefined, () => ProtonBrowserInfo.isFirefox())).toBe(false);
+  });
+});
+
 describe('the export header carries it', () => {
   const OPTIONS = readFileSync(join(__dirname, '..', 'options', 'options.js'), 'utf-8');
 

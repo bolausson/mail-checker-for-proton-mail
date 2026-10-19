@@ -98,6 +98,9 @@ const ProtonAccounts = (() => {
           // for. A count rise across a change is the added folders' existing
           // mail, not new mail (see _pollAccountViaCounts).
           countGen: typeof a.countGen === 'number' ? a.countGen : null,
+          // The folder mode in effect, which follows Premium (_folderMode),
+          // so a wake can tell Premium changed while no worker ran.
+          effectiveFolderMode: _folderMode(a),
         };
       }
       try {
@@ -125,6 +128,14 @@ const ProtonAccounts = (() => {
       a.nextPollNotBefore = s.nextPollNotBefore || null;
       a.listLimit = s.listLimit || null;
       a.countGen = typeof s.countGen === 'number' ? s.countGen : null;
+      // Premium can change while no worker runs (a trial ending overnight),
+      // and then nothing reports it. A list and cursor taken for the other
+      // folder mode are not resumed: the next poll fetches the one now in
+      // effect in full and takes its existing mail in silently.
+      if (s.effectiveFolderMode && s.effectiveFolderMode !== _folderMode(a)) {
+        a.lastEventId = null;
+        a.countGen = null;
+      }
       restored = true;
     }
     return restored;
@@ -255,8 +266,9 @@ const ProtonAccounts = (() => {
       // it is what strips them from a stale synced copy (see
       // _pruneStaleMonitoredIds), so it must never travel with that copy.
       staleMonitorIds: a.staleMonitorIds || [],
-      // Bumped by user edits of the monitored folders (picker, import), not
-      // by the automatic removal of a deleted folder: see poller.js _gen().
+      // Bumped by user edits of the monitored folders (picker, import) and
+      // by Premium starting or ending (applyPremiumScope), not by the
+      // automatic removal of a deleted folder: see poller.js _gen().
       scopeGen: a.scopeGen || 0,
       // Persist a permanent auth failure ('reauth' | 'disabled') so a dead
       // session stays marked across service-worker/browser restarts instead of
@@ -702,8 +714,16 @@ const ProtonAccounts = (() => {
     return _accounts.length > 0;
   }
 
-  /** Get public account info for UI display. */
+  /**
+   * Get public account info for UI display. Label, initials and color are
+   * Pro settings, given out as in effect: without Premium they read as
+   * unset (the email, its initials, the default color) and stay stored for
+   * when Premium is back. The other per-account settings are given out as
+   * stored, for the Pro settings panel; they take effect via _folderMode
+   * and the notification checks.
+   */
   function getAccounts() {
+    const premium = _proSettingsApply();
     return _accounts.map(a => ({
       id: a.id,
       username: a.username,
@@ -713,9 +733,9 @@ const ProtonAccounts = (() => {
       keysUnlocking: a.keysUnlocking || false,
       authError: a.authError || null,
       lastCheckTime: a.lastCheckTime,
-      label: a.label || '',
-      initials: a.initials || '',
-      color: a.color || '',
+      label: (premium && a.label) || '',
+      initials: (premium && a.initials) || '',
+      color: (premium && a.color) || '',
       notificationsEnabled: a.notificationsEnabled !== false,
       folderMode: a.folderMode || 'inbox',
       monitoredFolders: a.monitoredFolders || [],
@@ -1161,8 +1181,30 @@ const ProtonAccounts = (() => {
    *  set of queried IDs does. Order-independent, and never empty (a custom
    *  selection whose folders were all deleted is 'custom:'). */
   function _scopeKey(account) {
-    const mode = (account && account.folderMode) || 'inbox';
+    const mode = _folderMode(account);
     return mode + ':' + _monitoredQueryIds(account).slice().sort().join(',');
+  }
+
+  /**
+   * Premium started or ended, so every account with a stored folder mode
+   * other than Inbox now monitors something else. Reset its cursor like a
+   * change in the picker does, so the next poll fetches the new set in full
+   * and takes its existing mail in silently. Resolves true when any changed.
+   */
+  async function applyPremiumScope(premium) {
+    const changed = _accounts.filter(a => _folderMode(a, !premium) !== _folderMode(a, premium));
+    if (!changed.length) return false;
+    for (const a of changed) {
+      a.lastEventId = null;
+      a.scopeGen = (a.scopeGen || 0) + 1;
+      // In the snapshot too: should the settings write below be lost, the
+      // count still does not count as taken for the new folders.
+      a.countGen = null;
+    }
+    // Snapshot before settings, for the same reason as updateAccountSettings.
+    await saveSnapshot();
+    await _save();
+    return true;
   }
 
   /**
@@ -1384,7 +1426,7 @@ const ProtonAccounts = (() => {
     });
     console.warn('[ProtonAccounts] Auth error (' + reason + ') for', account.email,
       '- polling paused until re-login');
-    try { ProtonNotifier.notifyAuthError(account.email, reason); }
+    try { ProtonNotifier.notifyAuthError(account.email, reason, account.id); }
     catch (_) { /* notifier unavailable (e.g. unit tests) */ }
     // Repaint the toolbar badge NOW so the "!" appears the instant the session
     // is flagged dead, instead of waiting up to a poll interval for the next
@@ -2513,10 +2555,28 @@ const ProtonAccounts = (() => {
     return inbox ? inbox.Unread : 0;
   }
 
+  /**
+   * Whether the per-account Pro settings apply: the notification switch, a
+   * folder mode other than Inbox, and label, initials and color. Without
+   * Premium they stay stored as the trial (or a lapsed subscription) left
+   * them and come back with Premium, but the account behaves and shows as if
+   * they were at their defaults, like every other Pro setting.
+   */
+  function _proSettingsApply() {
+    return typeof ProtonPremium === 'undefined' || ProtonPremium.isPremium();
+  }
+
+  /** The folder mode in effect: the stored one with Premium, else Inbox.
+   *  (The notification switch follows the same rule in notifier.js and
+   *  poller.js _announce.) */
+  function _folderMode(account, premium = _proSettingsApply()) {
+    return (premium && account && account.folderMode) || 'inbox';
+  }
+
   /** Get unread count respecting per-account folder monitoring settings. */
   async function getMonitoredUnreadCount(accountId) {
     const account = getAccount(accountId);
-    const mode = (account && account.folderMode) || 'inbox';
+    const mode = _folderMode(account);
 
     if (mode === 'inbox') {
       return getInboxUnreadCount(accountId);
@@ -2547,7 +2607,7 @@ const ProtonAccounts = (() => {
 
   /** The label IDs a monitored list is built from, in query order. */
   function _monitoredQueryIds(account) {
-    const mode = (account && account.folderMode) || 'inbox';
+    const mode = _folderMode(account);
     if (mode === 'inbox') return [ProtonLabels.INBOX];
     if (mode === 'all') return [ProtonLabels.ALL_MAIL];
     // Nothing ticked has always meant Inbox. Everything ticked since deleted
@@ -2631,8 +2691,10 @@ const ProtonAccounts = (() => {
       }
     }
     if (leaked.length) await _pruneStaleMonitoredIds(account, leaked);
-    if (ids.length === 1) return allMsgs;
-    allMsgs.sort((a, b) => (b.Time || 0) - (a.Time || 0));
+    if (ids.length > 1) allMsgs.sort((a, b) => (b.Time || 0) - (a.Time || 0));
+    // One ID too: the cap is the user's setting, so it holds whatever size
+    // of reply comes back (a single ID used to be returned untrimmed, and
+    // Proton ignored the size we asked for, see getMessages).
     return allMsgs.slice(0, limit);
   }
 
@@ -2710,7 +2772,12 @@ const ProtonAccounts = (() => {
   /** Record what an account monitors, whenever that changes. */
   async function _recordMonitorConfig(account) {
     if (!account) return;
-    const desc = ProtonMonitoredIds.describe(account);
+    let desc = ProtonMonitoredIds.describe(account);
+    // Stored but out of effect without Premium: the log names what is
+    // actually queried, and what comes back with Premium.
+    if (_folderMode(account) !== (account.folderMode || 'inbox')) {
+      desc = 'mode=inbox (no Premium; stored ' + desc + ')';
+    }
     if (!(await ProtonDiag.once('monitor:' + account.id, desc))) return;
     ProtonDiag.record('monitor.config', { email: account.email, monitor: desc });
   }
@@ -2740,11 +2807,12 @@ const ProtonAccounts = (() => {
     });
   }
 
-  /** Mirror per-account settings to storage.sync when the user has sync on. */
+  /** Mirror per-account settings to storage.sync when the user has sync on
+   *  (a Pro feature, so with Premium only). */
   async function pushAccountSettingsToSync() {
     try {
       const { syncEnabled } = await browser.storage.local.get('syncEnabled');
-      if (!syncEnabled) return;
+      if (!syncEnabled || !_proSettingsApply()) return;
       await browser.storage.sync.set({ accountSettings: getAccountSettingsExport() });
       await browser.storage.local.set({ lastSyncTime: new Date().toISOString() });
     } catch (e) { /* sync storage may not be available */ }
@@ -2753,7 +2821,7 @@ const ProtonAccounts = (() => {
   /** Get the label IDs this account monitors (for event filtering). */
   function getMonitoredLabelIds(accountId) {
     const account = getAccount(accountId);
-    const mode = (account && account.folderMode) || 'inbox';
+    const mode = _folderMode(account);
     if (mode === 'all') return null; // null = match any
     return _monitoredQueryIds(account);
   }
@@ -2765,13 +2833,18 @@ const ProtonAccounts = (() => {
    */
   async function checkMonitoredAgainstCounts(accountId, counts) {
     const account = getAccount(accountId);
-    if (!account || account.folderMode !== 'custom') return;
+    if (!account || _folderMode(account) !== 'custom') return;
     const missing = ProtonMonitoredIds.missingFromCounts(_monitoredQueryIds(account), counts);
     if (missing.length) await _pruneStaleMonitoredIds(account, missing);
   }
 
   async function getMessages(accountId, labelId = ProtonLabels.INBOX, limit = 20, { unreadOnly = false } = {}) {
-    const params = { LabelID: labelId, Limit: String(limit), Sort: 'Time', Desc: '1' };
+    // Page and PageSize size the reply. Limit alone is ignored: measured,
+    // Limit 1, 2, 5 and 10 each returned all 6 unread messages, so "messages
+    // per account" capped nothing. Proton's web client sends all three, with
+    // Limit equal to PageSize (WebClients elementQuery.ts), and so do we.
+    const size = String(limit);
+    const params = { LabelID: labelId, Page: '0', PageSize: size, Limit: size, Sort: 'Time', Desc: '1' };
     if (unreadOnly) params.Unread = '1';
     const result = await request(accountId, 'GET', 'mail/v4/messages', { params });
     return result.Messages || [];
@@ -4524,6 +4597,7 @@ const ProtonAccounts = (() => {
     login,
     submit2FA,
     updateAccountSettings,
+    applyPremiumScope,
     reorderAccount,
     removeAccount,
     request,
@@ -4587,7 +4661,11 @@ const ProtonAccounts = (() => {
     refreshWebViewModes,
     getMailUrl: (...args) => ProtonUrlDetection.getMailUrl(...args),
     getComposeUrl: (...args) => ProtonUrlDetection.getComposeUrl(...args),
-    getAccountMapping: () => ProtonUrlDetection.getAccountMapping(),
+    // The label is a Pro setting: without Premium it reads as unset, as in getAccounts().
+    getAccountMapping: () => {
+      const premium = _proSettingsApply();
+      return ProtonUrlDetection.getAccountMapping().map((m) => (premium ? m : { ...m, label: '' }));
+    },
     setAccountMapping: (...args) => ProtonUrlDetection.setAccountMapping(...args),
     rescanUrlMapping: () => ProtonUrlDetection.rescanUrlMapping(),
     getAttachment,

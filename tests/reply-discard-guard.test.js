@@ -103,7 +103,8 @@ describe('the guard is wired where it has to be, not on one button', () => {
   });
 
   it('every forced call site is one of the six intended ones', () => {
-    const forced = SRC.match(/\{\s*force:\s*true\s*\}/g) || [];
+    // Other options may ride along ({ force: true, readWhileOpen }).
+    const forced = SRC.match(/\{\s*force:\s*true\b[^}]*\}/g) || [];
     expect(forced.length).toBe(6);
   });
 

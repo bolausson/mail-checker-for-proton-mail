@@ -958,9 +958,11 @@ const ProtonPremium = (() => {
   /**
    * Fetch the Paddle customer-portal URLs for the stored subscription.
    * Returns { ok:true, update_payment_method, cancel } on success, or
-   * { ok:false, error } otherwise. The returned URLs carry ~24h JWT
-   * tokens. Callers MUST NOT persist them to storage; fetch fresh on
-   * every "Manage subscription" interaction.
+   * { ok:false, error } otherwise. The proxy (contract 3) hands out only
+   * Paddle customer-portal links without a sign-in token: the user signs in
+   * to the portal with the purchase email. A link Paddle does not give is
+   * left out, which reads as null here. Callers fetch fresh on every "Manage
+   * subscription" interaction instead of persisting the links.
    */
   async function getManageUrls() {
     const key = _licenseKey;

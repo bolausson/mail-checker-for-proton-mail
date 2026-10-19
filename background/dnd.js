@@ -25,11 +25,19 @@ const ProtonDND = (() => {
       browser.alarms.create(ALARM_NAME, { when: _dndUntil });
     }
 
-    debugLog('[ProtonDND] Initialized, active:', isActive());
+    // The stored state, not isActive(): Premium is not loaded yet at this point.
+    debugLog('[ProtonDND] Initialized, until:', _dndUntil);
   }
 
-  /** Whether DND is currently active. */
+  /**
+   * Whether DND is currently active. It is Pro, so without Premium it is off,
+   * like every Pro setting: a DND set during the trial ("until I turn it
+   * off" never expires) would otherwise silence every notification for good,
+   * and a free user cannot turn it off (DND_DISABLE is Pro). It stays stored
+   * and applies again with Premium; a timed one still expires on its alarm.
+   */
   function isActive() {
+    if (typeof ProtonPremium !== 'undefined' && !ProtonPremium.isPremium()) return false;
     if (_dndUntil === -1) return true;
     if (_dndUntil > 0 && _dndUntil > Date.now()) return true;
     return false;

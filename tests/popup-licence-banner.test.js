@@ -27,8 +27,13 @@ import { join } from 'path';
 const POPUP = readFileSync(join(__dirname, '..', 'popup', 'popup.js'), 'utf-8');
 const POPUP_HTML = readFileSync(join(__dirname, '..', 'popup', 'popup.html'), 'utf-8');
 
-const PRICING_URL = 'https://apps.olausson.de/#mail-checker-pricing';
-const PAY_URL = 'https://customer-portal.paddle.com/update-payment?token=abc';
+const PRICING_URL = 'https://apps.olausson.de/mail_checker_for_proton/#pricing';
+// Contract 3 portal links: no sign-in token (the user signs in to Paddle with
+// the purchase email). Made-up, ULID-shaped IDs.
+const PORTAL = 'https://customer-portal.paddle.com/cpl_01' + 'c'.repeat(24);
+const SUB_ID = 'sub_01' + 'a'.repeat(24);
+const PAY_URL = PORTAL + '?action=update_subscription_payment_method&subscription_id=' + SUB_ID;
+const CANCEL_URL = PORTAL + '?action=cancel_subscription&subscription_id=' + SUB_ID;
 
 /** Slice `function NAME(...) { ... }` out of popup.js by balancing braces. */
 function lift(name) {
@@ -213,7 +218,9 @@ describe('the Update payment method button', () => {
   });
 
   it('never caches the URL: every click fetches a fresh one', async () => {
-    // The portal token expires after about a day.
+    // The link is never kept, so it always matches the current subscription,
+    // and while a payment is failing each request starts the background's
+    // quick re-checks again.
     const kit = bannerKit();
     const btn = kit._renderLicenseBanner(newList(), S.unpaid).querySelector('button');
     btn.click();
@@ -226,7 +233,11 @@ describe('the Update payment method button', () => {
 
   const FALLBACKS = [
     ['the proxy refuses', { ok: false, error: 'manage_urls_unavailable' }],
+    // Contract 3: a 502 for links the proxy could not use (detail
+    // unusable_links) reaches the popup as ok:false with the error code.
+    ['the proxy could not use the links (paddle_server_error)', { ok: false, error: 'paddle_server_error' }],
     ['there is no update URL', { ok: true, update_payment_method: null, cancel: null }],
+    ['the answer leaves the update URL out', { ok: true, cancel: CANCEL_URL }],
     ['the background is unreachable', new Error('Receiving end does not exist')],
     ['the answer is empty', null],
   ];

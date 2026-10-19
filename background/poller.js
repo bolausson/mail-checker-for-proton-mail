@@ -52,8 +52,9 @@ const ProtonPoller = (() => {
     // Any account in a permanent auth-error state (expired session / disabled)
     // surfaces as a "!" on the badge so the user notices something is wrong
     // without opening the popup. An account issue takes precedence over the
-    // muted DND style.
-    const hasIssue = ProtonAccounts.getAccounts().some(a => a.authError);
+    // muted DND style. Only for an account that is checked: one locked on
+    // the free plan has nothing in the popup to explain the "!".
+    const hasIssue = _effectiveAccountsForPolling().some(a => a.authError);
     if (ProtonDND.isActive() && !hasIssue) {
       ProtonBadge.setDND(unreadCount);
     } else {
@@ -588,6 +589,10 @@ const ProtonPoller = (() => {
   /** Get aggregated state for the popup. */
   function getState() {
     const accounts = ProtonAccounts.getAccounts();
+    // Only the accounts that are checked count: without Premium that is the
+    // first one, and the popup shows the others locked. Their counts are
+    // left from the trial, and they used to stay in the badge for good.
+    const checked = new Set(_effectiveAccountsForPolling().map(a => a.id));
     let totalUnread = 0;
     let allMessages = [];
 
@@ -598,7 +603,8 @@ const ProtonPoller = (() => {
       // Quiet-mail rules can keep matching mail out of the badge. The server
       // gives us a total, so the exclusion is a subtraction over the messages
       // we actually hold (never below zero).
-      totalUnread += Math.max(0, (full.unreadCount || 0) - _suppressedUnread(full));
+      const unread = Math.max(0, (full.unreadCount || 0) - _suppressedUnread(full));
+      if (checked.has(acc.id)) totalUnread += unread;
 
       // A quiet-mail rule can keep matching mail out of the list entirely.
       // Filtered here rather than in the popup so every consumer of the state
@@ -610,6 +616,11 @@ const ProtonPoller = (() => {
           _accountId: acc.id,
           _accountEmail: acc.email,
         }));
+      // The list holds at most "messages per account", the count is
+      // Proton's. What the count holds beyond the unread mail listed: the
+      // popup adds it to the unread it lists, so its per-account counts
+      // agree with the badge and still follow its own optimistic updates.
+      acc.unreadUnlisted = Math.max(0, unread - msgs.filter(m => m.Unread === 1).length);
       allMessages = allMessages.concat(msgs);
     }
 
@@ -722,8 +733,9 @@ const ProtonPoller = (() => {
   }
 
   /** Which user edit of the monitored folders an account is on. Bumped only
-   *  by the picker and by settings imports, never by the automatic removal of
-   *  a folder deleted in Proton: that one changes nothing the count or list
+   *  by the picker, by settings imports and by Premium starting or ending
+   *  (the folders are a Pro setting), never by the automatic removal of a
+   *  folder deleted in Proton: that one changes nothing the count or list
    *  contain, so it must not look like the user switched folders. */
   const _gen = account => (account && account.scopeGen) || 0;
 
@@ -740,8 +752,11 @@ const ProtonPoller = (() => {
     // plus an OpenPGP decrypt per arrival for a notification nobody will see
     // is precisely the cost the previewLines gate exists to avoid.
     const s = await getSettings();
+    // The account's own switch is Pro: without Premium it stays stored but
+    // is out of effect, as in notifyNewMessages.
+    const premium = typeof ProtonPremium === 'undefined' || ProtonPremium.isPremium();
     const willNotify = s.notificationsEnabled !== false &&
-      account.notificationsEnabled !== false &&
+      !(premium && account.notificationsEnabled === false) &&
       !(typeof ProtonDND !== 'undefined' && ProtonDND.isActive());
     await _fetchSnippets(accountId, messages, {
       force: willNotify && s.notificationPreviewText !== false,

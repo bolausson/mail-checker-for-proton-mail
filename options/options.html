@@ -8,6 +8,7 @@
   <script src="../lib/i18n.js" defer></script>
   <script src="../lib/dialog.js" defer></script>
   <script src="../lib/code-patterns.js" defer></script>
+  <script src="../lib/pro-settings.js" defer></script>
   <script src="../lib/browser-info.js" defer></script>
   <script src="../lib/notification-rules.js" defer></script>
   <script src="../lib/monitored-ids.js" defer></script>
@@ -21,7 +22,7 @@
          Clicking the text area opens the public pricing page; Start Trial and
          Buy License are discrete action buttons. -->
     <div id="premium-banner" class="premium-banner hidden">
-      <a id="premium-banner-link" class="premium-banner__text" href="https://apps.olausson.de/#mail-checker-pricing" target="_blank" rel="noopener">
+      <a id="premium-banner-link" class="premium-banner__text" href="https://apps.olausson.de/mail_checker_for_proton/#pricing" target="_blank" rel="noopener">
         <strong id="premium-banner-title">Upgrade to Premium</strong>
         <span id="premium-banner-text">Unlock multi-account, compose, HTML preview, and more.</span>
       </a>
@@ -30,6 +31,11 @@
         <button id="btn-buy-license" class="btn-secondary" data-i18n="buyLicense">Buy License</button>
       </div>
     </div>
+
+    <!-- Free plan: the locked controls show the values in effect (their
+         defaults), and this says that what the user chose for them, in the
+         trial or a subscription that ended, is kept. -->
+    <p id="pro-settings-note" class="license-validation__notice license-validation__notice--info pro-settings-note hidden" data-i18n="proSettingsOnHold">Settings marked 🔒 need Pro. On the free plan they use their defaults, as shown here; anything you chose for them is kept and applies again with Pro.</p>
 
     <!-- Premium / License section -->
     <details class="settings-section" id="premium-section">

@@ -122,7 +122,7 @@ describe('the premium-change hook', () => {
     return BG.slice(start, end);
   }
 
-  function register({ hasAccounts = true } = {}) {
+  function register({ hasAccounts = true, rescoped = false } = {}) {
     const log = [];
     let cb = null;
     const deps = {
@@ -130,8 +130,12 @@ describe('the premium-change hook', () => {
       ProtonPoller: {
         start: async () => { log.push('start'); },
         refreshBadgeNow: () => { log.push('badge'); },
+        poll: async () => { log.push('poll'); },
       },
-      ProtonAccounts: { hasAccounts: () => hasAccounts },
+      ProtonAccounts: {
+        hasAccounts: () => hasAccounts,
+        applyPremiumScope: async (premium) => { log.push('scope:' + premium); return rescoped; },
+      },
       ensureInitialized: () => { log.push('init'); return Promise.resolve(); },
     };
     new Function(...Object.keys(deps), hookSource())(...Object.values(deps));
@@ -146,11 +150,20 @@ describe('the premium-change hook', () => {
     expect(hook < initFn || hook > initEnd).toBe(true);
   });
 
-  it('waits for init, then re-applies the poll interval and the badge', async () => {
+  it('waits for init, then re-applies the folders, the poll interval and the badge', async () => {
     const { log, fire } = register();
     fire(false);
     await settle();
-    expect(log).toEqual(['init', 'start', 'badge']);
+    expect(log).toEqual(['init', 'scope:false', 'start', 'badge']);
+  });
+
+  it('polls at once when an account now monitors other folders', async () => {
+    // Per-account folders are Pro: a trial ending switches a custom
+    // selection back to Inbox, and a subscription brings it back.
+    const { log, fire } = register({ rescoped: true });
+    fire(true);
+    await settle();
+    expect(log).toEqual(['init', 'scope:true', 'start', 'badge', 'poll']);
   });
 
   it('leaves polling alone when there is no account', async () => {

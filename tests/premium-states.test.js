@@ -1,12 +1,14 @@
 /**
  * License states and check scheduling in background/premium.js.
  *
- * Every answer the licence proxy can give (wire contract 2, and every answer
- * the contract-1 proxy gave, which a 1.14.x upgrade can still meet) is run
- * through activation and through a check of a confirmed and an unconfirmed
- * key. Then the rules around it: the 1.14.7 upgrade, the check cadence and
- * its stamp, the stale-result guard, the follow-up after "Update payment",
- * the nudge, held keys next to grace and trial, and the trial after a license.
+ * Every /validate answer the licence proxy can give (wire contract 3,
+ * revision 2026-10-19.2, and every answer the contract-1 proxy gave, which a
+ * 1.14.x upgrade can still meet) is run through activation and through a
+ * check of a confirmed and an unconfirmed key. Then the rules around it: the
+ * 1.14.7 upgrade, the check cadence and its stamp, the stale-result guard, the
+ * follow-up after "Update payment", the nudge, held keys next to grace and
+ * trial, the trial after a license, and the /txn-to-sub and /manage-url
+ * answers.
  *
  * premium.js is a browser IIFE, evaluated here with its globals passed in, so
  * two instances can share one storage to stand for a worker that was stopped
@@ -144,6 +146,7 @@ function fields(over = {}) {
 }
 function okBody(over = {}) { return { ok: true, valid: true, ...fields(over) }; }
 
+// The /validate answers, named for contract 2, which introduced them.
 const V2 = {
   active: () => answer(okBody()),
   trialing: () => answer(okBody({ status: 'trialing' })),
@@ -980,6 +983,43 @@ describe('the follow-up after the update-payment link', () => {
   });
 });
 
+// --- The portal links (contract 3) ---
+
+describe('the portal links from /manage-url (contract 3)', () => {
+  // Paddle customer-portal links without a sign-in token (the user signs in
+  // with the purchase email); a link Paddle does not give is left out of the
+  // answer. Made-up IDs, ULID-shaped like SUB_A.
+  const CPL = 'cpl_01' + 'c'.repeat(24);
+  const PORTAL_PAY = `https://customer-portal.paddle.com/${CPL}?action=update_subscription_payment_method&subscription_id=${SUB_A}`;
+  const PORTAL_CANCEL = `https://customer-portal.paddle.com/${CPL}?action=cancel_subscription&subscription_id=${SUB_A}`;
+  const stored = w => JSON.stringify([w.local.data, w.sync.data]);
+
+  it.each([
+    ['the payment link', { cancel: PORTAL_CANCEL }, { update_payment_method: null, cancel: PORTAL_CANCEL }, 0],
+    ['the cancel link', { update_payment_method: PORTAL_PAY }, { update_payment_method: PORTAL_PAY, cancel: null }, T0 + 3 * HOUR],
+  ])('reads %s, left out by the proxy, as null', async (_name, links, expected, followUpUntil) => {
+    // A held key: the payment link alone decides whether the follow-up starts.
+    const w = await start({ local: heldState() });
+    w.proxy.manage = () => answer({ ok: true, ...links });
+    expect(await w.P.getManageUrls()).toStrictEqual({ ok: true, ...expected });
+    expect(w.local.data._licFollowUpUntil).toBe(followUpUntil);
+    // The links are never persisted.
+    expect(stored(w)).not.toContain('customer-portal.paddle.com');
+  });
+
+  it('answers a 502 for links it could not use (unusable_links) with ok:false and the error code', async () => {
+    const w = await start({ local: heldState() });
+    const before = alarmAt(w);
+    w.proxy.manage = () => answer({ ok: false, error: 'paddle_server_error', detail: 'unusable_links' }, 502);
+    expect(await w.P.getManageUrls()).toStrictEqual({ ok: false, error: 'paddle_server_error' });
+    // No link, so no follow-up, and the license itself is untouched.
+    expect(w.local.data._licFollowUpUntil).toBe(0);
+    expect(alarmAt(w)).toBe(before);
+    expect(w.P.getStatus().held).toBe('unpaid');
+    expect(w.P.getStatus().lastValidationError).toBe('subscription_unpaid');
+  });
+});
+
 // --- The nudge ---
 
 describe('the nudge from the popup and options', () => {
@@ -1247,6 +1287,38 @@ describe('the ID the user types', () => {
     w.proxy.txn = () => answer({ ok: false, error: 'subscription_not_found' });
     expect(await w.P.setLicenseKey(TXN_A)).toEqual({ error: 'subscription_not_found' });
     expect(validateCalls(w)).toHaveLength(0);
+  });
+
+  // Contract 3 (revision 2026-10-19.2): /txn-to-sub answers a transaction it
+  // cannot resolve with ok:false and an error code. Only not_ready is waited
+  // out; any other code goes back to the options page as it came, and there
+  // is no subscription ID, so nothing is stored.
+  it('passes on a transaction for another product (200, ok:false) and stores nothing', async () => {
+    const w = await start();
+    w.proxy.txn = () => answer({ ok: false, error: 'subscription_wrong_product' });
+    expect(await w.P.setLicenseKey(TXN_A)).toEqual({ error: 'subscription_wrong_product' });
+    expect(w.proxy.calls.map(c => c.path)).toEqual(['/txn-to-sub']);
+    expect(w.local.data).toEqual({});
+    expect(w.sync.data).toEqual({});
+    expect(w.alarms.map.size).toBe(0);
+    const s = w.P.getStatus();
+    expect(s.keyStored).toBe(false);
+    expect(s.premium).toBe(false);
+    expect(s.clearedReason).toBe(null);
+    // Never a license, so the trial is still on offer.
+    expect(s.trialAvailable).toBe(true);
+  });
+
+  it('passes on a Paddle server error from the lookup (502) and stores nothing', async () => {
+    const w = await start();
+    w.proxy.txn = () => answer({ ok: false, error: 'paddle_server_error' }, 502);
+    expect(await w.P.setLicenseKey(TXN_A)).toEqual({ error: 'paddle_server_error' });
+    // Asked once: a server error is not a subscription still being created.
+    expect(w.proxy.calls.map(c => c.path)).toEqual(['/txn-to-sub']);
+    expect(w.local.data).toEqual({});
+    expect(w.sync.data).toEqual({});
+    expect(w.alarms.map.size).toBe(0);
+    expect(w.P.getStatus().keyStored).toBe(false);
   });
 });
 

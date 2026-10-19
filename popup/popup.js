@@ -101,11 +101,21 @@
   }
 
   let _selectedMsg = null;
+  // The open message once the popup has marked it read: it leaves the unread
+  // list, but the preview stays on it (_syncPreviewWithList checks this
+  // before closing).
+  let _readWhileOpenId = null;
   let _snoozeTargetConversationIds = null;
   let _snoozeTargetAccountId = null;
   let _accountSections = []; // { collapseBtn, items, collapsed } per account
   let _savedState = null;
   let _showingAccounts = false;
+  // The settings as stored, and as in effect: without Premium every Pro
+  // setting reads as its free value (lib/pro-settings.js), while the stored
+  // choice is kept for when Premium is back. Everything that decides what
+  // the popup does or shows reads _settings; _refreshSettingsInEffect()
+  // keeps it current whenever the stored settings or Premium change.
+  let _storedSettings = {};
   let _settings = {};
 
   // Debug-mode console capture (mirrors the background's): when debug logging is
@@ -165,7 +175,7 @@
 
   // Public pricing / info page: opened from "Upgrade" entry points so the
   // user sees the plan comparison before hitting the payment page.
-  const PRICING_URL = 'https://apps.olausson.de/#mail-checker-pricing';
+  const PRICING_URL = 'https://apps.olausson.de/mail_checker_for_proton/#pricing';
 
   // Premium state, populated from GET_STATE. Mirrors ProtonPremium.getStatus().
   // `premium` is the only flag used for gating; the rest drive UI (trial badge,
@@ -195,10 +205,11 @@
 
   /**
    * Open Paddle's update-payment page for the stored subscription. The portal
-   * URL carries a short-lived token, so it is fetched on every click and never
-   * cached. Asking for it also starts the background's quick re-checks, so
-   * Premium comes back within minutes of the payment going through. Without a
-   * URL (proxy down, no key) the options page is the next best place.
+   * link carries no sign-in token (Paddle asks for the purchase email); it is
+   * fetched on every click, and asking for it also starts the background's
+   * quick re-checks, so Premium comes back within minutes of the payment going
+   * through. Without a link (proxy down, no key, or none from Paddle) the
+   * options page is the next best place.
    */
   async function _openUpdatePayment(btn) {
     if (btn) {
@@ -418,9 +429,16 @@
     if ((_settings.colorScheme || 'auto') === 'auto') _applyColorScheme('auto');
   });
 
+  /** Recompute the settings in effect from the stored ones and Premium.
+   *  Called when either changes: loading, a settings write, a premium flip. */
+  function _refreshSettingsInEffect() {
+    _settings = ProtonProSettings.inEffect(_storedSettings, isPremium());
+  }
+
   async function loadSettings() {
     const stored = await browser.storage.local.get('settings');
-    _settings = stored.settings || {};
+    _storedSettings = stored.settings || {};
+    _refreshSettingsInEffect();
     if (typeof ProtonI18n !== 'undefined') {
       ProtonI18n.setLanguage(_settings.language || 'en');
       ProtonI18n.applyTranslations();
@@ -688,6 +706,24 @@
 
   // --- Account Management ---
 
+  /**
+   * Save one account's label, initials, color, notification switch or folder
+   * selection. The background refuses UPDATE_ACCOUNT_SETTINGS without Premium
+   * (a trial can end while the popup is open), and ignoring the reply made
+   * that refusal look like a save. Resolves true only when it was stored.
+   */
+  async function _saveAccountSettings(accountId, settings) {
+    try {
+      const res = await browser.runtime.sendMessage({ type: 'UPDATE_ACCOUNT_SETTINGS', accountId, settings });
+      if (res && res.success) return true;
+      if (res && res.error === 'PREMIUM_REQUIRED') showUpgradePrompt('accountSettings');
+      else showToast(ProtonI18n.t('actionFailed'));
+    } catch (_) {
+      showToast(ProtonI18n.t('actionFailed'));
+    }
+    return false;
+  }
+
   function renderAccountsList(accounts) {
     accountsList.textContent = '';
 
@@ -713,7 +749,10 @@
       const status = document.createElement('span');
       status.className = 'account-status';
       const parts = [];
-      if (acc.unreadCount > 0) parts.push(ProtonI18n.t('unreadMessages', acc.unreadCount));
+      // Not for an account locked on the free plan (all but the first): it
+      // is not checked, so its count is left from the trial.
+      const locked = !isPremium() && accounts.indexOf(acc) > 0;
+      if (acc.unreadCount > 0 && !locked) parts.push(ProtonI18n.t('unreadMessages', acc.unreadCount));
       if (acc.keysUnlocked) parts.push('decryption active');
       status.textContent = parts.join(' · ') || ProtonI18n.t('connected');
 
@@ -727,12 +766,25 @@
       toggleBtn.className = 'account-toggle-btn';
       toggleBtn.title = ProtonI18n.t('settings');
       _setHTML(toggleBtn, '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>');
+      // Everything behind this button is Premium (the background refuses the
+      // saves), so it is gated like the other Premium controls: an upgrade
+      // prompt for a free user, or no button when premium UI is hidden.
+      // The folder and label pickers are filled on the first open, not here:
+      // GET_FOLDERS and GET_LABELS are Premium too, and a free user with a
+      // custom selection left from the trial can never open the panel.
+      let pickersFilled = false;
       toggleBtn.addEventListener('click', (e) => {
         e.stopPropagation();
+        if (!requirePremium('accountSettings')) return;
         detailsWrap.classList.toggle('hidden');
         toggleBtn.classList.toggle('expanded');
+        if (!pickersFilled && acc.folderMode === 'custom') {
+          pickersFilled = true;
+          _loadFolderPicker();
+          _loadLabelPicker();
+        }
       });
-      info.appendChild(toggleBtn);
+      if (showPremiumUI()) info.appendChild(toggleBtn);
 
       // Per-account customization row
       const customRow = document.createElement('div');
@@ -757,19 +809,11 @@
         const newLabel = labelInput.value.trim();
         // Auto-update initials placeholder when label changes
         initialsInput.placeholder = _getAccountInitials(newLabel || acc.email || '');
-        browser.runtime.sendMessage({
-          type: 'UPDATE_ACCOUNT_SETTINGS',
-          accountId: acc.id,
-          settings: { label: newLabel },
-        });
+        _saveAccountSettings(acc.id, { label: newLabel });
       });
 
       initialsInput.addEventListener('change', () => {
-        browser.runtime.sendMessage({
-          type: 'UPDATE_ACCOUNT_SETTINGS',
-          accountId: acc.id,
-          settings: { initials: initialsInput.value.trim().toUpperCase() },
-        });
+        _saveAccountSettings(acc.id, { initials: initialsInput.value.trim().toUpperCase() });
       });
 
       customRow.appendChild(labelInput);
@@ -784,11 +828,7 @@
 
       const picker = _createColorPicker(acc.color || '#6D4AFF', (c) => {
         colorBtn.style.background = c;
-        browser.runtime.sendMessage({
-          type: 'UPDATE_ACCOUNT_SETTINGS',
-          accountId: acc.id,
-          settings: { color: c },
-        });
+        _saveAccountSettings(acc.id, { color: c });
       });
 
       colorBtn.addEventListener('click', (e) => {
@@ -809,11 +849,7 @@
       notifCheck.type = 'checkbox';
       notifCheck.checked = acc.notificationsEnabled !== false;
       notifCheck.addEventListener('change', () => {
-        browser.runtime.sendMessage({
-          type: 'UPDATE_ACCOUNT_SETTINGS',
-          accountId: acc.id,
-          settings: { notificationsEnabled: notifCheck.checked },
-        });
+        _saveAccountSettings(acc.id, { notificationsEnabled: notifCheck.checked });
       });
       const bellIcon = document.createElement('span');
       _setHTML(bellIcon, '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 16a2 2 0 0 0 2-2H6a2 2 0 0 0 2 2zM8 1.918l-.797.161A4.002 4.002 0 0 0 4 6c0 .628-.134 2.197-.459 3.742-.16.767-.376 1.566-.663 2.258h10.244c-.287-.692-.502-1.49-.663-2.258C12.134 8.197 12 6.628 12 6a4.002 4.002 0 0 0-3.203-3.92L8 1.917z"/></svg>');
@@ -909,12 +945,8 @@
               else selectedIds.delete(f.ID);
               const newIds = Array.from(selectedIds).filter(id => !foldersLoaded || shownIds.has(id));
               acc.monitoredFolders = newIds;
-              browser.runtime.sendMessage({
-                type: 'UPDATE_ACCOUNT_SETTINGS',
-                accountId: acc.id,
-                settings: { monitoredFolders: newIds },
-              }).then(() => {
-                browser.runtime.sendMessage({ type: 'REFRESH' });
+              _saveAccountSettings(acc.id, { monitoredFolders: newIds }).then((saved) => {
+                if (saved) browser.runtime.sendMessage({ type: 'REFRESH' });
               });
             });
 
@@ -931,16 +963,13 @@
       folderSelect.addEventListener('change', () => {
         const mode = folderSelect.value;
         acc.folderMode = mode;
-        browser.runtime.sendMessage({
-          type: 'UPDATE_ACCOUNT_SETTINGS',
-          accountId: acc.id,
-          settings: { folderMode: mode },
-        }).then(() => {
-          browser.runtime.sendMessage({ type: 'REFRESH' });
+        _saveAccountSettings(acc.id, { folderMode: mode }).then((saved) => {
+          if (saved) browser.runtime.sendMessage({ type: 'REFRESH' });
         });
         if (mode === 'custom') {
           folderPickerWrap.classList.remove('hidden');
           labelPickerWrap.classList.remove('hidden');
+          pickersFilled = true;
           _loadFolderPicker();
           _loadLabelPicker();
         } else {
@@ -948,8 +977,6 @@
           labelPickerWrap.classList.add('hidden');
         }
       });
-
-      if (acc.folderMode === 'custom') _loadFolderPicker();
 
       folderRow.appendChild(folderSelect);
       detailsWrap.appendChild(folderRow);
@@ -991,12 +1018,8 @@
               else selectedIds.delete(lbl.ID);
               const newIds = Array.from(selectedIds).filter(id => shownLabelIds.has(id));
               acc.monitoredLabels = newIds;
-              browser.runtime.sendMessage({
-                type: 'UPDATE_ACCOUNT_SETTINGS',
-                accountId: acc.id,
-                settings: { monitoredLabels: newIds },
-              }).then(() => {
-                browser.runtime.sendMessage({ type: 'REFRESH' });
+              _saveAccountSettings(acc.id, { monitoredLabels: newIds }).then((saved) => {
+                if (saved) browser.runtime.sendMessage({ type: 'REFRESH' });
               });
             });
 
@@ -1015,7 +1038,6 @@
         });
       }
 
-      if (acc.folderMode === 'custom') _loadLabelPicker();
       detailsWrap.appendChild(labelPickerWrap);
       info.appendChild(detailsWrap);
 
@@ -1028,11 +1050,15 @@
       upBtn.title = ProtonI18n.t('moveUp');
       _setHTML(upBtn, '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M7.646 4.646a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 6.207V12a.5.5 0 0 1-1 0V6.207L5.354 8.354a.5.5 0 1 1-.708-.708l3-3z"/></svg>');
       upBtn.disabled = accIndex === 0;
+      // REORDER_ACCOUNT is Premium too: with more than one account left from
+      // a trial, the arrows did nothing at all for a free user. Gated and
+      // hidden like the settings button above.
       upBtn.addEventListener('click', () => {
+        if (!requirePremium('reorderAccounts')) return;
         browser.runtime.sendMessage({ type: 'REORDER_ACCOUNT', accountId: acc.id, direction: 'up' })
           .then(res => { if (res && res.accounts) renderAccountsList(res.accounts); });
       });
-      actionsDiv.appendChild(upBtn);
+      if (showPremiumUI()) actionsDiv.appendChild(upBtn);
 
       const downBtn = document.createElement('button');
       downBtn.className = 'icon-btn account-reorder';
@@ -1040,10 +1066,11 @@
       _setHTML(downBtn, '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M8.354 11.354a.5.5 0 0 1-.708 0l-3-3a.5.5 0 1 1 .708-.708L7.5 9.793V4a.5.5 0 0 1 1 0v5.793l2.146-2.147a.5.5 0 0 1 .708.708l-3 3z"/></svg>');
       downBtn.disabled = accIndex === accounts.length - 1;
       downBtn.addEventListener('click', () => {
+        if (!requirePremium('reorderAccounts')) return;
         browser.runtime.sendMessage({ type: 'REORDER_ACCOUNT', accountId: acc.id, direction: 'down' })
           .then(res => { if (res && res.accounts) renderAccountsList(res.accounts); });
       });
-      actionsDiv.appendChild(downBtn);
+      if (showPremiumUI()) actionsDiv.appendChild(downBtn);
 
       const removeBtn = document.createElement('button');
       removeBtn.className = 'icon-btn account-remove';
@@ -1476,11 +1503,29 @@
 
   function _applyOptimisticUpdate(action, { ids, conversationIds } = {}) {
     if (!_savedState || !_savedState.messages) return null;
+    // Marking the open message read takes it out of the list but not out of
+    // the preview. Any other removal of it (archive, move, snooze...) closes
+    // the preview as before, even after it was marked read.
+    let readOpenMsg = false;
+    if (_selectedMsg) {
+      if (REMOVE_ACTIONS.includes(action) && (ids || []).includes(_selectedMsg.ID)) {
+        readOpenMsg = action === 'MARK_READ';
+        _readWhileOpenId = readOpenMsg ? _selectedMsg.ID : null;
+      } else if (CONV_REMOVE_ACTIONS.includes(action) &&
+          (conversationIds || []).includes(_selectedMsg.ConversationID)) {
+        _readWhileOpenId = null;
+      }
+    }
     // Save state for rollback
     let snapshot = null;
     if (REMOVE_ACTIONS.includes(action)) {
       const idSet = new Set(ids || []);
       snapshot = _savedState.messages.filter(m => idSet.has(m.ID)).map(m => ({ ...m }));
+      // Marked unread again, but the poll that lists it again has not landed:
+      // it is unread all the same, so a failure must put it back unread.
+      if (readOpenMsg && _selectedMsg.Unread === 1 && !snapshot.some(m => m.ID === _selectedMsg.ID)) {
+        snapshot.push({ ..._selectedMsg });
+      }
       _savedState.messages = _savedState.messages.filter(m => !idSet.has(m.ID));
     } else if (CONV_REMOVE_ACTIONS.includes(action)) {
       const convSet = new Set(conversationIds || []);
@@ -1491,12 +1536,27 @@
       snapshot = _savedState.messages.filter(m => idSet.has(m.ID)).map(m => ({ ...m }));
       for (const msg of _savedState.messages) { if (idSet.has(msg.ID)) msg.Unread = 1; }
     }
+    // Whatever marked the open message read (its button, auto-mark on open
+    // or reply, star, label, a bulk action), its button now offers unread.
+    // After the snapshot: this marks the open copy read, which is the very
+    // object the list held, and a rollback must put it back unread.
+    if (readOpenMsg) _syncPreviewReadButton(_selectedMsg.ID, false);
     _savedState.unreadCount = _savedState.messages.filter(m => m.Unread === 1).length;
     render(_savedState);
     return snapshot;
   }
 
-  function _rollbackOptimistic(snapshot, action) {
+  function _rollbackOptimistic(snapshot, action, ids) {
+    // The open message's read button flipped with the change, so it flips
+    // back. Before the early return: marking unread a message that has left
+    // the list leaves nothing in the snapshot.
+    if (_selectedMsg && (ids || []).includes(_selectedMsg.ID)) {
+      if (action === 'MARK_READ' && snapshot && snapshot.some(m => m.ID === _selectedMsg.ID)) {
+        _syncPreviewReadButton(_selectedMsg.ID, true);
+      } else if (action === 'MARK_UNREAD') {
+        _syncPreviewReadButton(_selectedMsg.ID, false);
+      }
+    }
     if (!snapshot || !snapshot.length || !_savedState || !_savedState.messages) return;
     const isRemove = REMOVE_ACTIONS.includes(action) || CONV_REMOVE_ACTIONS.includes(action);
     const label = ACTION_LABELS[action] || action;
@@ -1585,7 +1645,7 @@
         settled = true;
         _pendingOptimistic = _pendingOptimistic.filter(e => e !== entry);
         if (snapshot) {
-          _rollbackOptimistic(snapshot, type);
+          _rollbackOptimistic(snapshot, type, ids);
           showToast(ProtonI18n.t('actionFailed') + ' (timeout)');
         }
       }
@@ -1605,32 +1665,56 @@
         // UI stands; the next poll's STATE_UPDATED syncs via _reconcile.
         if (state.messages) _reconcile(state);
       } else if (state && state.error) {
-        if (snapshot) _rollbackOptimistic(snapshot, type);
+        if (snapshot) _rollbackOptimistic(snapshot, type, ids);
         showToast(ProtonI18n.t('actionFailed') + ': ' + state.error);
       }
     } catch (err) {
       if (settled) return;
       settled = true;
       clearTimeout(timeoutId);
-      if (snapshot) _rollbackOptimistic(snapshot, type);
+      if (snapshot) _rollbackOptimistic(snapshot, type, ids);
       showToast(ProtonI18n.t('actionFailed'));
     } finally {
       _pendingOptimistic = _pendingOptimistic.filter(e => e !== entry);
     }
   }
 
+  /**
+   * The indexes before and after `msg` in `msgs`. A message that has left the
+   * list (the open one, marked read while open) still has a place there by
+   * its time, the list being newest first, so prev/next and auto-advance
+   * carry on from where it stood.
+   */
+  function _listNeighbours(msgs, msg) {
+    const idx = msgs.findIndex(m => m.ID === msg.ID);
+    if (idx >= 0) return { prev: idx - 1, next: idx + 1 };
+    const older = msgs.findIndex(m => (m.Time || 0) < (msg.Time || 0));
+    const slot = older < 0 ? msgs.length : older;
+    return { prev: slot - 1, next: slot };
+  }
+
   function _getNextMsgForAdvance(currentMsgId) {
     if (!_settings.autoAdvance || !_savedState || !_savedState.messages) return null;
     const msgs = _savedState.messages;
-    const idx = msgs.findIndex(m => m.ID === currentMsgId);
-    if (idx >= 0 && idx < msgs.length - 1) return msgs[idx + 1];
-    if (idx > 0) return msgs[idx - 1];
-    return null;
+    const current = msgs.find(m => m.ID === currentMsgId) ||
+      (_selectedMsg && _selectedMsg.ID === currentMsgId ? _selectedMsg : null);
+    if (!current) return null;
+    const { prev, next } = _listNeighbours(msgs, current);
+    return msgs[next] || msgs[prev] || null;
   }
 
   function _getNavList() {
     if (!_savedState || !_savedState.messages) return [];
-    const allMsgs = _savedState.messages;
+    let allMsgs = _savedState.messages;
+    // Free plan: only the first account is live (renderMessages locks the
+    // rest). A locked account is no longer polled, but its last messages are
+    // still in the state, and prev/next must not open them. Without this,
+    // "across accounts" at its default would walk straight into them.
+    if (!isPremium()) {
+      const first = (_savedState.accounts && _savedState.accounts[0]) || null;
+      const liveId = first ? first.id : (allMsgs[0] && (allMsgs[0]._accountId || 'unknown'));
+      allMsgs = allMsgs.filter(m => (m._accountId || 'unknown') === liveId);
+    }
     if (!_selectedMsg) return allMsgs;
     const crossAccount = _settings.navCrossAccount !== false; // default true
     if (crossAccount) return allMsgs;
@@ -1642,9 +1726,8 @@
   function _navigateMsg(direction) {
     const msgs = _getNavList();
     if (!msgs.length || !_selectedMsg) return;
-    const idx = msgs.findIndex(m => m.ID === _selectedMsg.ID);
-    if (idx < 0) return;
-    let nextIdx = idx + direction;
+    const { prev, next } = _listNeighbours(msgs, _selectedMsg);
+    let nextIdx = direction < 0 ? prev : next;
     const wrap = !!_settings.navWrap;
     if (nextIdx < 0) {
       nextIdx = wrap ? msgs.length - 1 : -1;
@@ -1663,10 +1746,10 @@
       btnNextMsg.disabled = true;
       return;
     }
-    const idx = msgs.findIndex(m => m.ID === _selectedMsg.ID);
+    const { prev, next } = _listNeighbours(msgs, _selectedMsg);
     const wrap = !!_settings.navWrap;
-    btnPrevMsg.disabled = !wrap && idx <= 0;
-    btnNextMsg.disabled = !wrap && idx >= msgs.length - 1;
+    btnPrevMsg.disabled = !wrap && prev < 0;
+    btnNextMsg.disabled = !wrap && next >= msgs.length;
   }
 
   btnPrevMsg.addEventListener('click', (e) => { e.stopPropagation(); _navigateMsg(-1); });
@@ -1675,9 +1758,38 @@
   function handleMarkRead(e, msgId, accountId) {
     e.stopPropagation();
     doAction('MARK_READ', [msgId], accountId);
+    _syncPreviewReadButton(msgId, false);
     showToast(ProtonI18n.t('markedAsRead'), () => {
       doAction('MARK_UNREAD', [msgId], accountId);
+      _syncPreviewReadButton(msgId, true);
     });
+  }
+
+  function handleMarkUnread(e, msgId, accountId) {
+    e.stopPropagation();
+    doAction('MARK_UNREAD', [msgId], accountId);
+    _syncPreviewReadButton(msgId, true);
+    showToast(ProtonI18n.t('markedAsUnread'), () => {
+      doAction('MARK_READ', [msgId], accountId);
+      _syncPreviewReadButton(msgId, false);
+    });
+  }
+
+  /**
+   * Keep the preview's read/unread button in step with the open message. Its
+   * title names what a click does and the click reads the state back from
+   * the button, so after "Mark as read" (or its Undo) the same button offers
+   * the opposite. A message other than the open one leaves it alone.
+   */
+  function _syncPreviewReadButton(msgId, unread) {
+    if (!_selectedMsg || _selectedMsg.ID !== msgId) return;
+    // The preview stays open on a message marked read (it has left the list),
+    // so its own copy is the one place that still says which it is.
+    _selectedMsg.Unread = unread ? 1 : 0;
+    const btn = previewActionsEl.querySelector('.action-read');
+    if (!btn) return;
+    btn.dataset.unread = unread ? '1' : '0';
+    btn.title = ProtonI18n.t(unread ? 'markAsRead' : 'markAsUnread');
   }
 
   async function handleArchive(e, msgId, accountId) {
@@ -2551,6 +2663,9 @@
     // this is an exit from the reply just as much as closing the preview is.
     if (!await _confirmLeavingReply(opts && opts.force)) return;
     _selectedMsg = msg;
+    // readWhileOpen: reopened (draft, pop-out) after this popup marked it
+    // read, so it is not in the unread list and must not close for that.
+    _readWhileOpenId = opts && opts.readWhileOpen ? msg.ID : null;
     _externalContentLoaded = false;
     externalContentBanner.classList.add('hidden');
     _replyMode = 'reply';
@@ -2604,7 +2719,7 @@
 
     _rawPreviewBody = null;
     // Free tier: plaintext only, no mode toggle. Premium: honor user's setting.
-    _previewMode = isPremium() ? (_settings.previewFormat || 'html') : 'text';
+    _previewMode = isPremium() ? _previewModeFor(_settings.previewFormat) : 'text';
     btnToggleFormat.title = _getFormatTitle();
     _updatePreviewModeIndicator();
     // Hide the format toggle only when the user has asked us to hide premium UI.
@@ -2629,6 +2744,7 @@
     // Auto-mark-as-read on preview
     if (_settings.autoMarkReadOnPreview && msg.Unread === 1) {
       doAction('MARK_READ', [msg.ID], msg._accountId);
+      _syncPreviewReadButton(msg.ID, false);
     }
   }
 
@@ -2738,23 +2854,25 @@
     previewLabels.textContent = '';
     if (!labelIds || labelIds.length === 0) return;
 
-    // Fetch label/folder names (cached per account)
-    if (!_labelCache[accountId]) {
+    // Custom label and folder names are Pro: the background refuses
+    // GET_LABELS and GET_FOLDERS without Premium, so a free user's preview
+    // asks for neither and shows Starred and the system folders only.
+    // With Premium the names are cached per account, but only once both
+    // arrived: a refusal (the trial ending) or a failed request is not a
+    // list, and caching it hid the names until the popup was reopened.
+    if (isPremium() && !_labelCache[accountId]) {
       try {
         const [labels, folders] = await Promise.all([
           browser.runtime.sendMessage({ type: 'GET_LABELS', accountId }),
           browser.runtime.sendMessage({ type: 'GET_FOLDERS', accountId }),
         ]);
-        _labelCache[accountId] = {
-          labels: Array.isArray(labels) ? labels : [],
-          folders: Array.isArray(folders) ? folders : [],
-        };
-      } catch (e) {
-        _labelCache[accountId] = { labels: [], folders: [] };
-      }
+        if (Array.isArray(labels) && Array.isArray(folders)) {
+          _labelCache[accountId] = { labels, folders };
+        }
+      } catch (e) { /* no names this time; the next preview asks again */ }
     }
+    const cache = (isPremium() && _labelCache[accountId]) || { labels: [], folders: [] };
 
-    const cache = _labelCache[accountId];
     const labelMap = {};
     for (const l of cache.labels) labelMap[l.ID] = l;
     const folderMap = {};
@@ -2822,9 +2940,13 @@
         title: isStarred ? ProtonI18n.t('unstar') : ProtonI18n.t('star'),
         icon: isStarred ? ICONS.starFilled : ICONS.star,
         handler: (e) => handleStar(e, msg.ID, accountId, isStarred) },
+      // On a read message this is "Mark as unread", so the click must send
+      // MARK_UNREAD. The state lives on the button (_syncPreviewReadButton).
       { key: 'markRead', cls: 'action-read', title: isUnread ? ProtonI18n.t('markAsRead') : ProtonI18n.t('markAsUnread'),
         icon: ICONS.markRead,
-        handler: (e) => handleMarkRead(e, msg.ID, accountId) },
+        handler: (e) => (e.currentTarget.dataset.unread === '1'
+          ? handleMarkRead(e, msg.ID, accountId)
+          : handleMarkUnread(e, msg.ID, accountId)) },
       { key: 'label', cls: 'action-label', title: ProtonI18n.t('labels'), icon: ICONS.label,
         handler: (e) => handleLabelMenu(e, msg, accountId) },
       { key: 'moveToFolder', cls: 'action-folder', title: ProtonI18n.t('moveToFolder'), icon: ICONS.folder,
@@ -2858,6 +2980,7 @@
       const btn = document.createElement('button');
       btn.className = 'action-btn ' + a.cls;
       btn.title = a.title;
+      if (a.key === 'markRead') btn.dataset.unread = isUnread ? '1' : '0';
       _setHTML(btn, a.icon);
       const handler = (!isPremium() && !FREE_PREVIEW_ACTIONS.has(a.key))
         ? (e) => { if (e && e.stopPropagation) e.stopPropagation(); showUpgradePrompt(a.key); }
@@ -2870,7 +2993,9 @@
   /**
    * Export the open message as a standard .eml (RFC822 / MIME) file, including
    * every attachment (so a calendar .ics or any file is preserved). Useful for
-   * debugging and archiving. Free for all users (no premium gate).
+   * debugging and archiving. The export itself is free; the attachments are
+   * not, because the background refuses GET_ATTACHMENT without Premium, so a
+   * free user gets the message without them and is told so.
    */
   async function handleExportEml(e, msg, accountId) {
     if (e && e.stopPropagation) e.stopPropagation();
@@ -2878,6 +3003,7 @@
     try {
       const parts = [];
       let skippedUndecrypted = 0;
+      let skippedPremium = 0;
       for (const att of (msg.Attachments || [])) {
         const keyPackets = att.KeyPackets || null;
         const res = await browser.runtime.sendMessage({
@@ -2890,6 +3016,7 @@
         // fetch failure and skip the part.
         const undecrypted = !!keyPackets && res && res.decrypted === false;
         if (undecrypted) skippedUndecrypted++;
+        if (res && res.error === 'PREMIUM_REQUIRED') skippedPremium++;
         if (res && res.data && !res.error && !undecrypted) {
           parts.push({
             name: (att.Name || 'attachment').replace(/"/g, ''),
@@ -2912,7 +3039,8 @@
       URL.revokeObjectURL(url);
       // The .eml is still worth having, but an export that quietly lost parts
       // is its own trap, so say so. Not 'downloadFailed': the file did download.
-      if (skippedUndecrypted > 0) showToast(ProtonI18n.t('attachmentsSkipped'));
+      if (skippedPremium > 0) showToast(ProtonI18n.t('emlExportedWithoutAttachments'));
+      else if (skippedUndecrypted > 0) showToast(ProtonI18n.t('attachmentsSkipped'));
     } catch (err) {
       showToast(ProtonI18n.t('downloadFailed'));
     }
@@ -3495,7 +3623,7 @@
     _rawPreviewBody = body;
     _inlineImages = new Map();
     // Free tier: plaintext only, no mode toggle. Premium: honor user's setting.
-    _previewMode = isPremium() ? (_settings.previewFormat || 'html') : 'text';
+    _previewMode = isPremium() ? _previewModeFor(_settings.previewFormat) : 'text';
     _updatePreviewModeIndicator();
     _renderPreviewBody();
     // Paint first, then fill the embedded images in. They are part of the
@@ -3568,6 +3696,17 @@
     // attachment list needs no refresh: it lists embedded images either way.
     if (resolved === 0 || _rawPreviewBody !== body) return;
     _renderPreviewBody();
+  }
+
+  /**
+   * The mode a message opens in for the previewFormat setting. The options
+   * page stores 'plaintext', as for the editor formats; the mode is called
+   * 'text', which is taken too (a hand-edited import or sync). Read as the
+   * mode itself, 'plaintext' fell through to RAW: "Plain text" showed the
+   * message source. Anything else is the default, HTML.
+   */
+  function _previewModeFor(format) {
+    return format === 'plaintext' || format === 'text' ? 'text' : 'html';
   }
 
   function _getFormatTitle() {
@@ -4027,6 +4166,7 @@
     // Dismiss any colour/emoji picker portaled to <body>, else it orphans.
     if (typeof PopupEditorToolbar !== 'undefined') PopupEditorToolbar.closeAllPopups();
     _selectedMsg = null;
+    _readWhileOpenId = null;
     _replyAttachments = [];
     _renderReplyAttachments();
     if (replySendOpts) replySendOpts.reset();
@@ -4185,6 +4325,9 @@
       draft.type = 'reply';
       draft.selectedMsgId = _selectedMsg.ID;
       draft.selectedMsgAccountId = _selectedMsg._accountId;
+      // Marked read while open, so a reopened popup will not find it in the
+      // unread list: _restoreDraft fetches it instead of dropping the reply.
+      if (_readWhileOpenId === _selectedMsg.ID) draft.selectedMsgRead = true;
       draft.replyMode = _replyMode;
       draft.replyText = replyText.value;
       draft.replyBody = _draftReplyBody();
@@ -4466,6 +4609,30 @@
     _saveDraft();
   }
 
+  /**
+   * A message this popup marked read while it was open has left the unread
+   * list, so a reopened popup (draft restore) or a popped-out window cannot
+   * find it there. Ask the background for it instead. Null when it cannot
+   * be fetched.
+   */
+  async function _fetchReadMessage(messageId, accountId) {
+    if (!messageId || !accountId) return null;
+    try {
+      const res = await browser.runtime.sendMessage({ type: 'GET_MESSAGE', messageId, accountId });
+      const m = res && !res.error && res.message;
+      if (!m || m.ID !== messageId) return null;
+      // Metadata only: openPreview fetches the body, as for a listed message.
+      // The two fields the background adds to listed ones are added here.
+      const acc = ((_savedState && _savedState.accounts) || []).find(a => a.id === accountId);
+      const msg = { ...m, _accountId: accountId, _accountEmail: acc ? acc.email : '' };
+      delete msg.Body;
+      delete msg.DecryptedBody;
+      return msg;
+    } catch (_) {
+      return null;
+    }
+  }
+
   async function _restoreDraft() {
     let draft;
     try {
@@ -4515,13 +4682,22 @@
       }
 
       if (draft.type === 'reply') {
-        if (!_savedState || !_savedState.messages || _savedState.messages.length === 0) {
+        const listed = (_savedState && _savedState.messages) || [];
+        let msg = listed.find(
+          m => m.ID === draft.selectedMsgId && m._accountId === draft.selectedMsgAccountId);
+        const readWhileOpen = !msg && !!draft.selectedMsgRead;
+        if (readWhileOpen) {
+          // Not in the unread list because it was read: a message that
+          // cannot be fetched now (offline, or gone) keeps its draft.
+          msg = await _fetchReadMessage(draft.selectedMsgId, draft.selectedMsgAccountId);
+          if (!msg) return false;
+        }
+        if (!msg) {
+          if (listed.length === 0) return false;
+          _clearDraft();
           return false;
         }
-        const msg = _savedState.messages.find(
-          m => m.ID === draft.selectedMsgId && m._accountId === draft.selectedMsgAccountId);
-        if (!msg) { _clearDraft(); return false; }
-        await openPreview(msg, { force: true });
+        await openPreview(msg, { force: true, readWhileOpen });
         _replyMode = draft.replyMode || 'reply';
         _replyEditorOpen = true;
         _updateReplyModeUI();
@@ -4569,7 +4745,8 @@
   /**
    * Reopen a specific message in a popped-out window carrying ?msg=&acct=
    * (the preview "pop out" button). Skipped if a draft already reopened a
-   * preview, or the message is no longer in the polled set.
+   * preview, or the message is no longer in the polled set. One marked read
+   * while open (&read=1) is not in that set, so it is fetched instead.
    */
   async function _maybeOpenDeepLinkedMessage() {
     const params = new URLSearchParams(location.search);
@@ -4577,9 +4754,11 @@
     if (!msgId) return;
     if (!previewPanel.classList.contains('hidden')) return; // already open via draft
     const acct = params.get('acct') || '';
-    const msg = _savedState && _savedState.messages &&
+    let msg = _savedState && _savedState.messages &&
       _savedState.messages.find(m => m.ID === msgId && (!acct || m._accountId === acct));
-    if (msg) await openPreview(msg, { force: true });
+    const readWhileOpen = !msg && params.get('read') === '1';
+    if (readWhileOpen) msg = await _fetchReadMessage(msgId, acct);
+    if (msg) await openPreview(msg, { force: true, readWhileOpen });
   }
 
   // Draft auto-save listeners are attached after compose elements are declared (see below)
@@ -4644,6 +4823,8 @@
       if (_selectedMsg) {
         url += '&msg=' + encodeURIComponent(_selectedMsg.ID) +
                '&acct=' + encodeURIComponent(_selectedMsg._accountId || '');
+        // Marked read while open: no longer listed, so the window fetches it.
+        if (_readWhileOpenId === _selectedMsg.ID) url += '&read=1';
       }
       const width = Math.max(_settings.popupWidth || 420, 680);
       const height = Math.max(_settings.popupHeight || 540, 720);
@@ -4959,6 +5140,7 @@
       // Auto-mark-as-read on reply
       if (_replyMode !== 'forward' && _settings.autoMarkReadOnReply && _selectedMsg && _selectedMsg.Unread === 1) {
         doAction('MARK_READ', [msgId], accountId);
+        _syncPreviewReadButton(msgId, false);
       }
 
       if (andArchive) {
@@ -5538,6 +5720,22 @@
     });
   }
 
+  /**
+   * The switchers only set the editors' lang attribute. Firefox picks its
+   * dictionary from that; Chrome ignores it and checks the languages turned
+   * on in its own settings, so there they would change nothing. Hidden with
+   * the separator in front of them, which would otherwise end the toolbar.
+   */
+  function _hideSpellcheckSwitchers() {
+    if (ProtonBrowserInfo.isFirefox()) return;
+    for (const sel of document.querySelectorAll('.spellcheck-lang-select')) {
+      sel.classList.add('hidden');
+      const sep = sel.previousElementSibling;
+      if (sep && sep.classList.contains('editor-sep')) sep.classList.add('hidden');
+    }
+  }
+  _hideSpellcheckSwitchers();
+
   // Clipboard image paste
   composeBody.addEventListener('paste', (e) => {
     const items = e.clipboardData && e.clipboardData.items;
@@ -5764,7 +5962,8 @@
       const msgs = grouped.get(accountId) || [];
       const accInfo = allAccounts.find(a => a.id === accountId);
       const email = (msgs.length > 0 && msgs[0]._accountEmail) || (accInfo && accInfo.email) || accountId;
-      const unread = msgs.filter(m => m.Unread === 1).length;
+      // Listed unread plus what Proton counts beyond the list (see updateStatusBar).
+      const unread = msgs.filter(m => m.Unread === 1).length + ((accInfo && accInfo.unreadUnlisted) || 0);
 
       const displayLabel = (accInfo && accInfo.label) || email;
       const acctColor = (accInfo && accInfo.color) || '';
@@ -6099,8 +6298,9 @@
 
   // --- OTP Code Detection ---
   // Patterns live in lib/code-patterns.js (shared with options.js).
-  // Free users always get the shipped defaults; premium users may
-  // override/disable defaults and add their own custom patterns.
+  // Free users always get the shipped defaults (_settings is in effect, so
+  // codeDetectionEnabled and codePatterns read as their defaults); premium
+  // users may override/disable defaults and add their own custom patterns.
 
   function _detectOTP(subject, snippet) {
     if (_settings && _settings.codeDetectionEnabled === false) return null;
@@ -6342,7 +6542,10 @@
       overflowWrap.addEventListener('mouseleave', _menuLeave);
 
       for (const a of overflow) {
-        const opensSubmenu = (a.key === 'label' || a.key === 'moveToFolder');
+        // Labels and folders open their submenu on hover, which asks for
+        // GET_LABELS / GET_FOLDERS. Both are Pro, so without Premium they act
+        // like the other Pro entries: a click shows the upgrade prompt.
+        const opensSubmenu = (a.key === 'label' || a.key === 'moveToFolder') && isPremium();
         const btn = createActionBtn(a.cls, a.title, a.icon, (e) => {
           if (!opensSubmenu) {
             _closeAllMenus();
@@ -6396,14 +6599,22 @@
         if (msg.Unread === 1) unreadByAccount[aid]++;
       }
 
-      for (const acc of state.accounts) {
+      // Free plan: only the first account is checked, as in renderMessages.
+      // The others are locked, and a count from the trial would mislead.
+      const freeAccountLock = !isPremium();
+
+      for (let idx = 0; idx < state.accounts.length; idx++) {
+        const acc = state.accounts[idx];
         const color = acc.color || '#6D4AFF';
         const label = acc.label || acc.email || acc.id;
         const initials = acc.initials || _getAccountInitials(label);
-        const unread = unreadByAccount[acc.id] || 0;
+        const locked = freeAccountLock && idx > 0;
+        // The unread it lists, plus what Proton counts beyond the list
+        // ("messages per account" caps the list, not the count).
+        const unread = locked ? 0 : (unreadByAccount[acc.id] || 0) + (acc.unreadUnlisted || 0);
 
         const pill = document.createElement('button');
-        pill.className = 'account-pill';
+        pill.className = 'account-pill' + (locked ? ' account-locked' : '');
         pill.title = label + (unread > 0 ? ' (' + unread + ')' : '');
 
         const circle = document.createElement('span');
@@ -6414,7 +6625,14 @@
         circle.textContent = initials;
         pill.appendChild(circle);
 
-        if (unread > 0) {
+        if (locked) {
+          // The lock its section header shows, in place of a count.
+          const lockIcon = document.createElement('span');
+          lockIcon.className = 'account-pill-badge account-pill-locked-icon';
+          lockIcon.textContent = '🔒';
+          lockIcon.title = ProtonI18n.t('premiumRequired');
+          pill.appendChild(lockIcon);
+        } else if (unread > 0) {
           const badge = document.createElement('span');
           badge.className = 'account-pill-badge';
           badge.textContent = unread;
@@ -6501,11 +6719,17 @@
     document.body.classList.toggle('hide-premium-ui', !showPremiumUI());
     _renderPremiumHeaderBadge();
     // If premium flipped (trial started / license activated / license removed),
-    // re-apply theme + color scheme + custom CSS so the UI updates immediately.
+    // the Pro settings come into or go out of effect: re-apply theme + color
+    // scheme + custom CSS + editor settings so the UI updates immediately.
+    // The list below re-renders with them anyway. Do Not Disturb is Pro too
+    // (dnd.js isActive), so the bell asks again rather than keep its state.
     if (wasPremium !== isPremium()) {
+      _refreshSettingsInEffect();
       _applyTheme();
       _applyColorScheme(_settings.colorScheme || 'auto');
       _applyCustomCSS(_settings.customCSS || '');
+      _applyFormatSettings();
+      browser.runtime.sendMessage({ type: 'DND_GET_STATUS' }).then(updateDndButton).catch(() => {});
     }
 
     applyDensity();
@@ -6526,12 +6750,34 @@
     showState('normal');
     updateStatusBar(state);
     renderMessages(state.messages, state.accounts);
+    _syncPreviewWithList(state);
+  }
 
-    if (_selectedMsg) {
-      const stillExists = state.messages && state.messages.some(m => m.ID === _selectedMsg.ID);
+  /**
+   * The open message after the list changed. Gone from the list closes the
+   * preview (archived, moved, snoozed, deleted, or read or moved elsewhere),
+   * except when the popup itself marked it read while it was open: then the
+   * user is still reading it.
+   */
+  function _syncPreviewWithList(state) {
+    if (!_selectedMsg) return;
+    const stillExists = state.messages && state.messages.some(m => m.ID === _selectedMsg.ID);
+    if (stillExists) {
+      // Back in the unread list (marked unread, or its Undo): from here on
+      // it leaving the list means it was read or moved elsewhere. Marked
+      // unread elsewhere (the web app) lands here too, with its button still
+      // offering unread, so the button follows the list.
+      if (_readWhileOpenId === _selectedMsg.ID) {
+        _readWhileOpenId = null;
+        _syncPreviewReadButton(_selectedMsg.ID, true);
+      }
+      _updateNavButtons();
+    } else if (_readWhileOpenId === _selectedMsg.ID) {
+      _updateNavButtons();
+    } else {
       // Forced, so it never prompts and never needs awaiting; render() stays
       // synchronous for its five callers.
-      if (!stillExists) closePreview({ force: true });
+      closePreview({ force: true });
     }
   }
 
@@ -6767,17 +7013,19 @@
         }
         break;
 
+      // Premium, like their buttons: without the check a free user saw
+      // "Archived" first and "Action failed: PREMIUM_REQUIRED" after.
       case 'e': { // Archive
         e.preventDefault();
         const msg = previewOpen ? _selectedMsg : getFocusedMessage();
-        if (msg) handleArchive(e, msg.ID, msg._accountId);
+        if (msg && requirePremium('archive')) handleArchive(e, msg.ID, msg._accountId);
         break;
       }
 
       case '#': { // Delete
         e.preventDefault();
         const msg = previewOpen ? _selectedMsg : getFocusedMessage();
-        if (msg) handleTrash(e, msg.ID, msg._accountId);
+        if (msg && requirePremium('delete')) handleTrash(e, msg.ID, msg._accountId);
         break;
       }
 
@@ -6794,7 +7042,8 @@
   // Reload settings when changed from options page
   browser.storage.onChanged.addListener((changes, area) => {
     if (area === 'local' && changes.settings) {
-      _settings = changes.settings.newValue || {};
+      _storedSettings = changes.settings.newValue || {};
+      _refreshSettingsInEffect();
       _applyTheme();
       _applyColorScheme(_settings.colorScheme || 'auto');
       _applyCustomCSS(_settings.customCSS || '');
@@ -6826,7 +7075,11 @@
     browser.runtime.sendMessage({ type: 'GET_PREMIUM_STATUS' }).catch(() => null),
   ]).then(([_settingsResult, premiumStatus]) => {
     if (premiumStatus) _premium = premiumStatus;
+    _refreshSettingsInEffect();
     _applyVisualSettings();
+    // loadSettings() applied the editor settings before Premium was known,
+    // so a Pro spellcheck language read as its default: apply them again.
+    _applyFormatSettings();
     applyDensity();
     return browser.runtime.sendMessage({ type: 'GET_PENDING_2FA' });
   }).then(res => {

@@ -239,6 +239,23 @@ describe('the .eml export drops undecrypted parts and tells the user', () => {
     expect(eml).toContain('readme.txt');
     expect(eml).toContain(GOOD_B64);
   });
+
+  it('tells a free user the attachments are a Premium part of the export', async () => {
+    // GET_ATTACHMENT is not in FREE_ALLOWED, so for a free user every part
+    // comes back refused. The .eml still downloads, without them, and the
+    // toast says why instead of nothing at all.
+    const refused = { error: 'PREMIUM_REQUIRED', feature: 'GET_ATTACHMENT' };
+    const { dom, toasts, eml } = await exportWith({ ok: refused, bad: refused });
+    expect(dom.rec.clicks).toHaveLength(1);
+    expect(eml).not.toContain('numbers.xlsx');
+    expect(eml).not.toContain('secret.pdf');
+    expect(toasts).toEqual(['emlExportedWithoutAttachments']);
+  });
+
+  it('stays silent for a free user exporting a message without attachments', async () => {
+    const { toasts } = await exportWith({}, []);
+    expect(toasts).toEqual([]);
+  });
 });
 
 // --- 3. _resolveInlineImages: no data: URL over ciphertext ------------------

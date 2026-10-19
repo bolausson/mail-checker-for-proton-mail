@@ -328,6 +328,7 @@ describe('the open message shows the arrows, and clears them', () => {
       btnToggleFormat: el(),
       _updateCanvasButton: noop,
       _getFormatTitle: () => '',
+      _previewModeFor: () => 'html',
       _updatePreviewModeIndicator: noop,
       showPremiumUI: () => true,
       isPremium: () => true,

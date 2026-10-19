@@ -88,6 +88,27 @@ describe('the free tier can manage its license', () => {
   });
 });
 
+describe('the free tier keeps support and the email cache working', () => {
+  // Support asks free users for the diagnostic log, which needs the popup's
+  // console capture, and the options page offers the email cache to everyone.
+  // Refused, the cache toggle left the disk copy behind and "Clear cache"
+  // reported success while clearing nothing.
+  const MESSAGES = ['DIAG_CAPTURE', 'SET_CACHE_ENABLED', 'CLEAR_MSG_CACHE'];
+
+  it('allows the diagnostic capture and both cache controls', () => {
+    for (const type of MESSAGES) {
+      expect(FREE_ALLOWED.has(type), type).toBe(true);
+    }
+  });
+
+  it('names only messages the background handles', () => {
+    const src = readFileSync(join(__dirname, '..', 'background', 'background.js'), 'utf-8');
+    for (const type of MESSAGES) {
+      expect(src.includes(`case '${type}'`), type).toBe(true);
+    }
+  });
+});
+
 describe('paid features stay paid', () => {
   it('does not leak compose / send', () => {
     for (const type of ['SEND_NEW_MESSAGE', 'SEND_REPLY', 'FORWARD_MESSAGE']) {

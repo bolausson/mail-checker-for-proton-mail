@@ -3,62 +3,9 @@
  */
 
 (function () {
-  const DEFAULT_SETTINGS = {
-    pollIntervalMinutes: 1,
-    notificationsEnabled: true,
-    notificationClickAction: 'openMessage',
-    notificationSoundEnabled: false,
-    notificationSound: 'chime',
-    notificationVolume: 50,
-    notificationPreviewText: true,
-    badgeColor: '#6D4AFF',
-    use24HourTime: false,
-    maxEmailsPerAccount: 20,
-    popupWidth: 420,
-    popupHeight: 540,
-    displayDensity: 'comfortable',
-    senderDisplayFormat: 'name',
-    previewLines: 0,
-    autoMarkReadOnPreview: false,
-    autoMarkReadOnReply: true,
-    autoMarkReadOnArchive: false,
-    autoMarkReadOnDelete: false,
-    autoMarkReadOnSpam: false,
-    autoMarkReadOnPhishing: false,
-    autoMarkReadOnStar: false,
-    autoMarkReadOnMoveToFolder: false,
-    autoMarkReadOnLabel: false,
-    hideSendArchive: false,
-    prettifyRaw: false,
-    imageAttachMode: 'attachment',
-    autoAdvance: false,
-    navCrossAccount: true,
-    navWrap: false,
-    visibleActions: ['openWeb', 'markRead', 'archive', 'snooze', 'delete'],
-    actionOrder: ['openWeb', 'star', 'markRead', 'label', 'moveToFolder', 'archive', 'snooze', 'delete', 'deletePermanently', 'spam', 'phishing', 'headers', 'details', 'exportEml'],
-    theme: 'classic',
-    colorScheme: 'auto',
-    customCSS: '',
-    previewFormat: 'html',
-    alwaysLoadExternalContent: false,
-    loadSenderIconsAlways: false,
-    senderIconFaviconFallback: false,
-    emailCanvasHeuristic: true,
-    codeDetectionEnabled: true,
-    aiAssistantEnabled: true,
-    codePatterns: [],
-    notificationRules: [],
-    composeMode: 'webui',
-    composeFormat: 'html',
-    replyFormat: 'plaintext',
-    spellcheckLanguage: 'auto',
-    language: 'en',
-    hidePremiumUI: false,
-    cacheEnabled: false,
-    driveDefaultFolder: 'mcpm-shared-files',
-    driveDefaultExpirationDays: 30,
-    driveDefaultPermission: 'viewer',
-  };
+  // Every setting's default, from lib/pro-settings.js: it also says which
+  // settings are Pro, and so which controls PREMIUM_ONLY_IDS locks.
+  const DEFAULT_SETTINGS = ProtonProSettings.DEFAULTS;
 
   // DOM refs
   const pollInterval = document.getElementById('poll-interval');
@@ -316,16 +263,49 @@
     return syncData;
   }
 
+  // Premium as the background last reported it, null until it answers. It
+  // decides what the Pro controls show (without Premium: the values in
+  // effect, see lib/pro-settings.js) and what a save may write.
+  let _premiumNow = null;
+  // The plan the form was last filled for, and a counter so that only the
+  // latest of two overlapping loads fills it.
+  let _formPlan;
+  let _loadSeq = 0;
+
+  /** Whether settings sync runs: the switch is on and the user has Premium
+   *  (sync is Pro). Without Premium the stored switch is kept, not used. */
+  async function _syncInEffect() {
+    const data = await browser.storage.local.get('syncEnabled');
+    return ProtonProSettings.syncInEffect(data.syncEnabled, _premiumNow === true);
+  }
+
+  /** Premium is known, or changed: the Pro controls show the values in
+   *  effect for a plan, so refill the form when it was filled for another. */
+  function _applyPlanToSettings(premium) {
+    _premiumNow = premium;
+    if (_formPlan !== premium) loadSettings();
+  }
+
+  /** Without Premium, a note above the settings: the locked ones show
+   *  their defaults, and what the user chose for them is kept. */
+  function _renderProSettingsNote(premium) {
+    const note = document.getElementById('pro-settings-note');
+    if (note) note.classList.toggle('hidden', premium !== false);
+  }
+
   async function loadSettings() {
-    const localData = await browser.storage.local.get(['settings', 'syncEnabled', 'debugLogging']);
-    const isSyncEnabled = !!localData.syncEnabled;
-    syncEnabled.checked = isSyncEnabled;
-    debugLogging.checked = !!localData.debugLogging;
+    const seq = ++_loadSeq;
+    const premium = _premiumNow;
+    const localData = await browser.storage.local.get(['settings', 'syncEnabled', 'debugLogging', 'lastSyncTime']);
+    // Settings sync is Pro: without Premium the switch shows off and nothing
+    // is taken from sync. The stored switch is kept for when Premium is back.
+    const isSyncEnabled = ProtonProSettings.syncInEffect(localData.syncEnabled, premium === true);
 
     let stored = localData;
     if (isSyncEnabled) {
       try {
         const synced = await browser.storage.sync.get(['settings', 'accountSettings']);
+        if (seq !== _loadSeq) return;
         if (synced.settings) stored = synced;
         // Apply synced account settings (label, color, initials, folders, etc.)
         if (synced.accountSettings) {
@@ -336,7 +316,20 @@
         }
       } catch (e) { /* sync not available, fall back to local */ }
     }
-    const s = { ...DEFAULT_SETTINGS, ...stored.settings };
+    // A newer load (Premium became known meanwhile) fills the form instead.
+    if (seq !== _loadSeq) return;
+    _formPlan = premium;
+    syncEnabled.checked = isSyncEnabled;
+    btnSyncNow.disabled = !isSyncEnabled;
+    _displaySyncTime(isSyncEnabled ? localData.lastSyncTime : null);
+    debugLogging.checked = !!localData.debugLogging;
+    _renderProSettingsNote(premium);
+
+    // Without Premium the locked Pro controls show what applies, their free
+    // values, rather than the user's own choices; saveSettings keeps those.
+    // Until the background has answered they show the stored values, locked.
+    const shown = premium === false ? ProtonProSettings.inEffect(stored.settings, false) : stored.settings;
+    const s = { ...DEFAULT_SETTINGS, ...shown };
 
     pollInterval.value = String(s.pollIntervalMinutes);
     popupWidth.value = s.popupWidth;
@@ -390,7 +383,10 @@
     const allKeys = ALL_ACTION_DEFS.map(d => d.key);
     const fullOrder = [...ao, ...allKeys.filter(k => !ao.includes(k))];
     _buildActionsList(fullOrder, va);
-    previewFormat.value = s.previewFormat || 'html';
+    // 'plaintext' is what this page stores; 'text' (the popup's name for the
+    // mode) can come from a hand-edited import or sync, and has no option of
+    // its own, so a save would write an empty value.
+    previewFormat.value = s.previewFormat === 'plaintext' || s.previewFormat === 'text' ? 'plaintext' : 'html';
     alwaysLoadExternal.checked = !!s.alwaysLoadExternalContent;
     loadSenderIconsAlwaysInput.checked = !!s.loadSenderIconsAlways;
     senderIconFaviconFallbackInput.checked = !!s.senderIconFaviconFallback;
@@ -417,7 +413,7 @@
 
   /** Save current form values to storage and notify background. */
   async function saveSettings() {
-    const settings = {
+    let settings = {
       pollIntervalMinutes: parseInt(pollInterval.value, 10),
       popupWidth: parseInt(popupWidth.value, 10),
       popupHeight: parseInt(popupHeight.value, 10),
@@ -477,11 +473,20 @@
       driveDefaultPermission: driveDefaultPermission.value === 'editor' ? 'editor' : 'viewer',
     };
 
+    // Without Premium the locked Pro controls show the values in effect, not
+    // the user's own choices, and a save must never overwrite those: they
+    // apply again with Premium. So every Pro setting is written back as it is
+    // stored, read fresh, whatever its control shows. The same while the
+    // form is not yet refilled for Premium: it still shows the free values.
+    if (_premiumNow !== true || _formPlan !== true) {
+      const current = await browser.storage.local.get('settings');
+      settings = ProtonProSettings.keepStored(settings, current.settings);
+    }
+
     await browser.storage.local.set({ settings });
 
-    // Also write to sync storage if enabled
-    const localData = await browser.storage.local.get('syncEnabled');
-    if (localData.syncEnabled) {
+    // Also write to sync storage if sync is on (Pro)
+    if (await _syncInEffect()) {
       try {
         await browser.storage.sync.set({ settings });
         await _updateSyncTimestamp();
@@ -699,10 +704,11 @@
   btnClearCache.addEventListener('click', async () => {
     btnClearCache.disabled = true;
     try {
-      await browser.runtime.sendMessage({ type: 'CLEAR_MSG_CACHE' });
-      clearCacheStatus.textContent = ProtonI18n.t('cacheCleared');
+      // Read the reply: a refused clear used to say "Cache cleared" as well.
+      const res = await browser.runtime.sendMessage({ type: 'CLEAR_MSG_CACHE' });
+      clearCacheStatus.textContent = ProtonI18n.t(res && res.success ? 'cacheCleared' : 'cacheClearFailed');
     } catch (e) {
-      clearCacheStatus.textContent = '';
+      clearCacheStatus.textContent = ProtonI18n.t('cacheClearFailed');
     } finally {
       btnClearCache.disabled = false;
     }
@@ -720,11 +726,8 @@
     });
   });
 
-  // Load and display last sync time on startup, disable button if sync off
-  browser.storage.local.get('lastSyncTime').then(data => {
-    btnSyncNow.disabled = !syncEnabled.checked;
-    if (data.lastSyncTime && syncEnabled.checked) _displaySyncTime(data.lastSyncTime);
-  });
+  // The last sync time, and Sync now disabled while sync is off, are
+  // displayed by loadSettings(), which knows whether sync is in effect.
 
   syncEnabled.addEventListener('change', async () => {
     const enabled = syncEnabled.checked;
@@ -745,11 +748,12 @@
     }
   });
 
-  // Listen for sync changes from other devices
+  // Listen for sync changes from other devices (sync is Pro: not taken in
+  // without Premium)
   browser.storage.onChanged.addListener((changes, area) => {
     if (area !== 'sync') return;
-    browser.storage.local.get('syncEnabled').then(data => {
-      if (!data.syncEnabled) return;
+    _syncInEffect().then(inEffect => {
+      if (!inEffect) return;
       _updateSyncTimestamp();
       if (changes.settings) {
         browser.storage.local.set({ settings: changes.settings.newValue }).then(() => {
@@ -863,8 +867,7 @@
       }
 
       // Also update sync storage so synced data matches the import
-      const localSync = await browser.storage.local.get('syncEnabled');
-      if (localSync.syncEnabled) {
+      if (await _syncInEffect()) {
         try {
           const syncData = { settings: merged };
           if (accountSettings) syncData.accountSettings = accountSettings;
@@ -888,16 +891,50 @@
     if (!await ProtonDialog.confirm(ProtonI18n.t('resetConfirm'),
       { confirmLabel: ProtonI18n.t('resetToDefaults'), danger: true,
         anchor: document.getElementById('btn-reset') })) return;
-    // Reset global settings
-    await browser.storage.local.set({ settings: { ...DEFAULT_SETTINGS } });
-    if (syncEnabled.checked) {
-      await browser.storage.sync.set({ settings: { ...DEFAULT_SETTINGS } });
+    // Without Premium the Pro settings are on hold, not in use: they keep
+    // the user's own choices for when Premium is back, so only the free
+    // settings are reset. The per-account settings are Pro too, and kept.
+    const premium = _premiumNow === true;
+    let fresh = { ...DEFAULT_SETTINGS };
+    if (!premium) {
+      const current = await browser.storage.local.get('settings');
+      fresh = ProtonProSettings.keepStored(fresh, current.settings);
     }
-    // Reset per-account settings (label, initials, color, notifications, folders)
-    const accounts = await browser.runtime.sendMessage({ type: 'GET_ACCOUNTS' });
-    if (accounts && Array.isArray(accounts)) {
-      for (const acc of accounts) {
-        await browser.runtime.sendMessage({
+    await browser.storage.local.set({ settings: fresh });
+    if (await _syncInEffect()) {
+      await browser.storage.sync.set({ settings: fresh });
+    }
+    const accountsReset = premium ? await _resetAccountSettings() : 'kept';
+    await browser.runtime.sendMessage({ type: 'SETTINGS_CHANGED' });
+    loadSettings();
+    // With Premium the settings above are always reset, and only the
+    // per-account part can be refused, so only that is named when it was.
+    if (accountsReset === 'done') showStatus(ProtonI18n.t('settingsReset'));
+    else if (accountsReset === 'kept') showStatus(ProtonI18n.t('settingsResetProKept'), 6000);
+    else if (accountsReset === 'premium') showStatus(ProtonI18n.t('settingsResetAccountsKept'), 6000);
+    else showStatus(ProtonI18n.t('settingsResetAccountsFailed'), 6000);
+  });
+
+  /**
+   * Reset every account's own settings (label, initials, color,
+   * notifications, folders). Resolves 'done'; 'premium' when the background
+   * refused because changing them is Pro (the trial ended while this page
+   * was open; without Premium they are out of effect anyway); or 'failed'
+   * when any other save did not go through.
+   */
+  async function _resetAccountSettings() {
+    let accounts;
+    try {
+      accounts = await browser.runtime.sendMessage({ type: 'GET_ACCOUNTS' });
+    } catch (_) {
+      return 'failed';
+    }
+    if (!Array.isArray(accounts)) return 'failed';
+    let failed = false;
+    for (const acc of accounts) {
+      let res = null;
+      try {
+        res = await browser.runtime.sendMessage({
           type: 'UPDATE_ACCOUNT_SETTINGS',
           accountId: acc.id,
           settings: {
@@ -910,12 +947,13 @@
             monitoredLabels: [],
           },
         });
-      }
+      } catch (_) { /* counted as failed below */ }
+      // Refused for one account means refused for all: ask no further.
+      if (res && res.error === 'PREMIUM_REQUIRED') return 'premium';
+      if (!res || !res.success) failed = true;
     }
-    await browser.runtime.sendMessage({ type: 'SETTINGS_CHANGED' });
-    loadSettings();
-    showStatus(ProtonI18n.t('settingsReset'));
-  });
+    return failed ? 'failed' : 'done';
+  }
 
   // --- Verification code pattern manager ---
 
@@ -1753,6 +1791,32 @@
     btnRefreshAlignment.textContent = ProtonI18n.t('refreshAlignment');
   });
 
+  /**
+   * The sync label names the Firefox account, which Chrome does not have:
+   * Chrome and the other Chromium browsers sync through their own account.
+   * Runs before loadSettings(), whose applyTranslations() fills the text in.
+   */
+  function _applySyncLabel() {
+    if (ProtonBrowserInfo.isFirefox()) return;
+    const syncLabel = document.querySelector('[data-i18n="syncSettings"]');
+    if (syncLabel) syncLabel.setAttribute('data-i18n', 'syncSettingsChrome');
+  }
+
+  /**
+   * The spellcheck language only sets the lang attribute of the popup's
+   * editors. Firefox picks its dictionary from it; Chrome ignores it and
+   * checks the languages turned on in its own settings, so the Firefox hint
+   * (a dictionary and an about:config pref) would send a Chrome user nowhere.
+   * Same timing as _applySyncLabel.
+   */
+  function _applySpellcheckHint() {
+    if (ProtonBrowserInfo.isFirefox()) return;
+    const hint = document.querySelector('[data-i18n="spellcheckHint"]');
+    if (hint) hint.setAttribute('data-i18n', 'spellcheckHintChrome');
+  }
+
+  _applySyncLabel();
+  _applySpellcheckHint();
   loadSettings();
   loadAccountAlignment();
   loadPremium();
@@ -1793,45 +1857,24 @@
     }
   }
 
-  // IDs of controls that are premium-only. Their parent .option-group gets
-  // the .premium-locked class when the user is on the free tier, which CSS
-  // uses to dim + disable. The language selector and account-level toggles
-  // stay fully functional on free.
-  const PREMIUM_ONLY_IDS = [
-    // General
-    'poll-interval', 'popup-width', 'popup-width-value', 'popup-height', 'popup-height-value',
-    'theme-select', 'color-scheme', 'custom-css', 'display-density',
-    'max-emails', 'sender-display', 'preview-lines', 'use-24h-time',
-    'preview-format', 'compose-mode', 'compose-format', 'reply-format',
-    'spellcheck-language', 'badge-color',
-    // Notifications (customization only: master toggle stays free)
-    'notification-click-action', 'notification-sound-enabled',
-    'notification-sound', 'notification-volume', 'notification-preview-text',
-    // Behavior: all premium
-    'auto-mark-read-preview', 'auto-mark-read-reply', 'auto-mark-read-archive',
-    'auto-mark-read-delete', 'auto-mark-read-spam', 'auto-mark-read-phishing',
-    'auto-mark-read-star', 'auto-mark-read-move-to-folder', 'auto-mark-read-label',
-    'hide-send-archive', 'prettify-raw', 'image-attach-mode', 'auto-advance',
-    'nav-cross-account', 'nav-wrap', 'actions-sortable',
-    // Data: export, import, Firefox sync are premium
-    'sync-enabled', 'btn-sync-now', 'btn-export', 'btn-import',
-    // Misc
-    'always-load-external',
-    // Verification code pattern customization (basic detection stays free)
-    'code-detection-enabled',
-    'code-patterns-list',
-    'code-pattern-name', 'code-pattern-regex', 'code-pattern-add-btn',
-    'code-pattern-reset-all',
-    // Quiet mail rules: the whole section is premium
-    'quiet-rules-list', 'quiet-rule-add-btn',
-  ];
+  // IDs of controls that are premium-only, from lib/pro-settings.js, which
+  // also names the settings each one edits: without Premium those act as
+  // their defaults everywhere, and this page shows them so. Their parent
+  // .option-group gets the .premium-locked class when the user is on the
+  // free tier, which CSS uses to dim + disable. The language selector and
+  // account-level toggles stay fully functional on free.
+  const PREMIUM_ONLY_IDS = Object.keys(ProtonProSettings.LOCKED_CONTROLS);
 
   function applyPremiumLocks(isFree) {
     const groups = new Set();
     for (const id of PREMIUM_ONLY_IDS) {
       const el = document.getElementById(id);
       if (!el) continue;
-      el.disabled = isFree ? true : false;
+      // A list (quick actions, quiet rules, code patterns) has no disabled
+      // state: its rows' checkboxes and buttons, rebuilt on every render,
+      // still took Tab and Space. inert covers them, present and future.
+      if (el.matches('input, select, textarea, button')) el.disabled = isFree;
+      else el.toggleAttribute('inert', isFree);
       const group = el.closest('.option-group') || el.parentElement;
       if (group) groups.add(group);
     }
@@ -2027,6 +2070,8 @@
     document.body.classList.toggle('is-free', !status.premium);
     document.body.classList.toggle('is-premium', !!status.premium);
     applyPremiumLocks(!status.premium);
+    // The Pro controls show the values in effect: refill them for a new plan.
+    _applyPlanToSettings(!!status.premium);
 
     // The "Hide premium UI" option is only useful when the user is on the
     // free tier; hide the whole option group for premium users.
@@ -2248,9 +2293,10 @@
   _sendLicenseNudge();
 
   // --- Manage subscription ---
-  // The /manage-url endpoint returns URLs whose token has ~24h expiry.
-  // We MUST NOT persist them; a short in-memory cache (60s) is fine and
-  // keeps double-clicks across the two buttons free of redundant fetches.
+  // The /manage-url links carry no sign-in token (the user signs in to
+  // Paddle with the purchase email). They are not persisted, so they always
+  // match the current subscription; a short in-memory cache (60s) keeps
+  // double-clicks across the two buttons free of redundant fetches.
   const MANAGE_CACHE_TTL_MS = 60 * 1000;
   let _manageUrlsCache = null;
   let _manageUrlsCacheFetchedAt = 0;

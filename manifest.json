@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Mail Checker for Proton Mail",
-  "version": "2.0.0",
-  "description": "Read, write and manage Proton Mail without opening a tab. Attachments, calendar RSVP, notifications, multi-account.",
+  "version": "2.0.1",
+  "description": "Unread count, notifications and reading for one Proton Mail account. Pro adds reply and compose, attachments, RSVP, more accounts.",
 
   "browser_specific_settings": {
     "gecko": {
@@ -58,6 +58,7 @@
       "lib/account-limit.js",
       "lib/notification-rules.js",
       "lib/monitored-ids.js",
+      "lib/pro-settings.js",
       "lib/openpgp.min.js",
       "lib/bcrypt.min.js",
       "lib/i18n.js",

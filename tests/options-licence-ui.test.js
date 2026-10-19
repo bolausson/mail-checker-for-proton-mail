@@ -20,6 +20,8 @@ const ROOT = join(__dirname, '..');
 const SRC = readFileSync(join(ROOT, 'options', 'options.js'), 'utf-8');
 const HTML = readFileSync(join(ROOT, 'options', 'options.html'), 'utf-8');
 const BODY = HTML.slice(HTML.indexOf('<body>') + 6, HTML.lastIndexOf('</body>'));
+const ProtonProSettings = new Function(
+  readFileSync(join(ROOT, 'lib', 'pro-settings.js'), 'utf-8') + '; return ProtonProSettings;')();
 
 // Index just past a string literal or line comment starting at i, or i itself
 // when neither starts there. Keeps braces in strings and comments from
@@ -130,9 +132,12 @@ function build(replies = {}) {
     tabs: { create: (o) => { tabs.push(o.url); } },
   };
   const quiet = { warn: vi.fn(), error: vi.fn(), log: vi.fn() };
-  const api = new Function('browser', 'ProtonI18n', 'document', 'console', HARNESS)(
-    browser, I18N, document, quiet);
-  return { api, sent, tabs, sendMessage, replies, quiet };
+  // The settings form's side of renderPremium (tests/pro-settings.test.js).
+  const plans = [];
+  const api = new Function('browser', 'ProtonI18n', 'document', 'console', 'ProtonProSettings',
+    '_applyPlanToSettings', HARNESS)(
+    browser, I18N, document, quiet, ProtonProSettings, (premium) => plans.push(premium));
+  return { api, sent, tabs, sendMessage, replies, quiet, plans };
 }
 
 const $ = (id) => document.getElementById(id);
@@ -674,6 +679,49 @@ describe('_maybeRevalidateOnReturn', () => {
   it('runs on focus and on the page becoming visible', () => {
     expect(SRC).toMatch(/window\.addEventListener\('focus', \(\) => _maybeRevalidateOnReturn\(Date\.now\(\)\)\)/);
     expect(SRC).toMatch(/addEventListener\('visibilitychange'[\s\S]{0,160}_maybeRevalidateOnReturn\(Date\.now\(\)\)/);
+  });
+});
+
+describe('the Manage subscription buttons with contract 3 answers', () => {
+  // Paddle customer-portal links without a sign-in token. Made-up IDs.
+  const PORTAL_CANCEL = 'https://customer-portal.paddle.com/cpl_01' + 'c'.repeat(24)
+    + '?action=cancel_subscription&subscription_id=sub_01' + 'a'.repeat(24);
+  const manageNotice = () => {
+    const el = $('license-manage-notice');
+    return {
+      text: el.textContent,
+      kind: ['error', 'warning'].find(k => el.classList.contains('license-validation__notice--' + k)) || null,
+      hidden: el.classList.contains('hidden'),
+    };
+  };
+
+  it('a link the proxy left out (null from the background) is unavailable, and the other one still opens', async () => {
+    const h = build({ GET_MANAGE_URLS: { ok: true, update_payment_method: null, cancel: PORTAL_CANCEL } });
+    h.api.renderPremium(UNPAID);
+    await h.api._handleManageClick('payment');
+    expect(h.tabs).toEqual([]);
+    expect(manageNotice()).toEqual({ text: 'manageUnavailable', kind: 'warning', hidden: false });
+    expect(h.api.manageOpenedAt).toBe(0);
+
+    await h.api._handleManageClick('cancel');
+    expect(h.tabs).toEqual([PORTAL_CANCEL]);
+    expect(manageNotice().hidden).toBe(true);
+    // The answer was usable, so the second button took it from the short cache.
+    expect(h.sent).toEqual(['GET_MANAGE_URLS']);
+  });
+
+  it('a 502 for links the proxy could not use (paddle_server_error, unusable_links) shows the error, and the next click asks again', async () => {
+    const h = build({ GET_MANAGE_URLS: { ok: false, error: 'paddle_server_error' } });
+    h.api.renderPremium(PAST_DUE);
+    await h.api._handleManageClick('payment');
+    expect(h.tabs).toEqual([]);
+    expect(manageNotice()).toEqual({ text: 'manageError', kind: 'error', hidden: false });
+    expect(h.api.manageOpenedAt).toBe(0);
+    expect($('btn-manage-payment').disabled).toBe(false);
+    expect($('btn-manage-cancel').disabled).toBe(false);
+    // A failure is not cached.
+    await h.api._handleManageClick('payment');
+    expect(h.sent).toEqual(['GET_MANAGE_URLS', 'GET_MANAGE_URLS']);
   });
 });
 

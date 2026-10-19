@@ -17,12 +17,17 @@ const ProtonLabels = Object.freeze({
 });
 
 /**
- * Convenience accessor for extension settings from browser.storage.local.
+ * The extension settings in effect, from browser.storage.local. Without
+ * Premium every Pro setting reads as its free value (lib/pro-settings.js);
+ * what is stored stays untouched and applies again with Premium.
  * Avoids repeating the get('settings') + fallback pattern in every module.
  */
 async function getSettings() {
   const stored = await browser.storage.local.get('settings');
-  return stored.settings || {};
+  const settings = stored.settings || {};
+  if (typeof ProtonProSettings === 'undefined') return settings;
+  const premium = typeof ProtonPremium === 'undefined' || ProtonPremium.isPremium();
+  return ProtonProSettings.inEffect(settings, premium);
 }
 
 /**

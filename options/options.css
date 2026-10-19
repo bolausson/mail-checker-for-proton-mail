@@ -747,6 +747,11 @@ body .btn-primary:not(.premium-banner__actions *):hover {
   margin-top: 4px;
 }
 
+/* The free plan's note that the user's own Pro choices are kept. */
+.pro-settings-note {
+  margin: 0 0 16px;
+}
+
 /* Premium-locked controls: dimmed and non-interactive on free tier. */
 .option-group.premium-locked {
   position: relative;
