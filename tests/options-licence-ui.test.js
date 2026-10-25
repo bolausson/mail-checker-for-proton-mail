@@ -22,6 +22,8 @@ const HTML = readFileSync(join(ROOT, 'options', 'options.html'), 'utf-8');
 const BODY = HTML.slice(HTML.indexOf('<body>') + 6, HTML.lastIndexOf('</body>'));
 const ProtonProSettings = new Function(
   readFileSync(join(ROOT, 'lib', 'pro-settings.js'), 'utf-8') + '; return ProtonProSettings;')();
+const ProtonLicenseEntry = new Function(
+  readFileSync(join(ROOT, 'lib', 'license-entry.js'), 'utf-8') + '; return ProtonLicenseEntry;')();
 
 // Index just past a string literal or line comment starting at i, or i itself
 // when neither starts there. Keeps braces in strings and comments from
@@ -76,6 +78,7 @@ const DECLS = [
   'RETURN_CHECK_WINDOW_MS', 'RETURN_CHECK_MIN_GAP_MS', '_manageOpenedAt', '_lastReturnCheckAt',
   'SUPPORT_EMAIL', 'MANAGE_CACHE_TTL_MS', '_manageUrlsCache', '_manageUrlsCacheFetchedAt',
   'VALIDATE_MIN_MS', 'VALIDATE_RESULT_MS', '_validateResultTimer',
+  'btnActivate', 'licenseInput', 'licenseError',
 ];
 const FUNCS = [
   'loadPremium', 'applyPremiumLocks', '_trialDaysPhrase', '_renderStatusLine',
@@ -83,12 +86,13 @@ const FUNCS = [
   '_formatValidationTime', '_formatPeriodDate', '_showValidateResult', '_runValidateNow',
   '_onLicenseStorageChanged', '_needsPaymentAction', '_maybeRevalidateOnReturn',
   '_sendLicenseNudge', '_getManageUrls', '_showManageNotice', '_clearManageNotice',
-  '_handleManageClick',
+  '_handleManageClick', '_activateLicense', '_showLicenseError', '_licenseEntryMessage',
 ];
 const HARNESS = DECLS.map(liftDecl).join('\n') + '\n' + FUNCS.map(lift).join('\n\n') + `
   return {
     renderPremium, loadPremium, _errLabel, _sentence, _onLicenseStorageChanged,
     _maybeRevalidateOnReturn, _runValidateNow, _sendLicenseNudge, _handleManageClick,
+    _activateLicense, _licenseEntryMessage,
     get manageOpenedAt() { return _manageOpenedAt; },
   };`;
 
@@ -109,6 +113,7 @@ const DICT = {
   err_subscription_not_found: 'abonnement introuvable',
   err_subscription_inactive: 'abonnement inactif',
   err_subscription_paused: 'Resume it in the Paddle customer portal.',
+  err_subscription_wrong_product: 'cet abonnement n\'appartient pas à Mail Checker',
 };
 const I18N = {
   t: (k) => (k in DICT ? DICT[k] : k),
@@ -135,8 +140,8 @@ function build(replies = {}) {
   // The settings form's side of renderPremium (tests/pro-settings.test.js).
   const plans = [];
   const api = new Function('browser', 'ProtonI18n', 'document', 'console', 'ProtonProSettings',
-    '_applyPlanToSettings', HARNESS)(
-    browser, I18N, document, quiet, ProtonProSettings, (premium) => plans.push(premium));
+    '_applyPlanToSettings', 'ProtonLicenseEntry', HARNESS)(
+    browser, I18N, document, quiet, ProtonProSettings, (premium) => plans.push(premium), ProtonLicenseEntry);
   return { api, sent, tabs, sendMessage, replies, quiet, plans };
 }
 
@@ -837,5 +842,158 @@ describe('LICENSE_NUDGE on open', () => {
   it('is sent exactly once, when the page opens', () => {
     const calls = SRC.match(/^\s*_sendLicenseNudge\(\);/gm) || [];
     expect(calls).toHaveLength(1);
+  });
+});
+
+describe('the license key field', () => {
+  // Made-up IDs: 07 where every real Paddle ID (a ULID, whose first
+  // characters are its creation time) starts with 01, so none of them can be
+  // a real one. Written out whole, not split up to get past a scanner.
+  const SUB = 'sub_07h04vsc0qhwtsbsxh3422wjs4';
+  const SUB2 = 'sub_07' + 'b'.repeat(24);
+  const TXN = 'txn_07h04vsc0qhwtsbsxh3422wjs4';
+  const PORTAL = 'https://customer-portal.paddle.com/cpl_07' + 'c'.repeat(24)
+    + '?action=overview&subscription_id=' + SUB;
+
+  // The page with `text` in the field. SET_LICENSE_KEY records the key it is
+  // sent and the button's label while it runs, then answers `answer`.
+  function entering(text, answer = { success: true }) {
+    const keys = [];
+    const labels = [];
+    const h = build({
+      SET_LICENSE_KEY: (msg) => {
+        keys.push(msg.key);
+        labels.push($('btn-activate-license').textContent);
+        if (answer instanceof Error) throw answer;
+        return answer;
+      },
+      GET_PREMIUM_STATUS: ACTIVE,
+    });
+    $('license-key-input').value = text;
+    $('btn-activate-license').textContent = 'activateLicense';
+    return { ...h, keys, labels };
+  }
+  const error = () => ({ text: $('license-entry-error').textContent, hidden: isHidden('license-entry-error') });
+
+  it.each([
+    ['two subscription IDs', SUB + ' ' + SUB2, 'licenseEntrySeveralIds'],
+    // The field keeps its text when an activation fails: a new ID pasted
+    // straight against the earlier one must not have the earlier one checked
+    // again in its place.
+    ['a transaction ID pasted straight after a subscription ID', SUB + TXN, 'licenseEntrySeveralIds'],
+    ['a cut ID pasted straight after an earlier one', SUB + SUB2.slice(0, -3), 'licenseEntryMistypedSubId'],
+    ['a Google Play order number', 'Gpa.1234-5678-9012-34567', 'licenseEntryPlayOrder'],
+    ['the "txn-" typo', 'txn-' + TXN.slice(4), 'licenseEntryMistypedTxnId'],
+    ['a transaction ID cut short', TXN.slice(0, -2), 'licenseEntryMistypedTxnId'],
+    ['a subscription ID with an o in it', SUB.slice(0, 10) + 'o' + SUB.slice(11), 'licenseEntryMistypedSubId'],
+    ['the prefix alone', 'sub_', 'licenseEntryMistypedSubId'],
+    ['an email address', 'name@example.com', 'licenseEntryEmail'],
+    ['"sub_" and then an email address', 'sub_name@example.com', 'licenseEntryEmail'],
+    ['anything else', 'hello', 'licenseEntryNotAnId'],
+  ])('answers %s at once, and sends nothing', async (_label, text, key) => {
+    const h = entering(text);
+    await h.api._activateLicense();
+    expect(error()).toEqual({ text: key, hidden: false });
+    expect(h.sent).toEqual([]);
+    // Left as it was, to be corrected.
+    expect($('license-key-input').value).toBe(text);
+    expect($('btn-activate-license').disabled).toBe(false);
+  });
+
+  it('does nothing for an empty field, or one with invisible characters only', async () => {
+    for (const text of ['', '   ', '​﻿']) {
+      const h = entering(text);
+      await h.api._activateLicense();
+      expect(h.sent).toEqual([]);
+      expect(error().hidden).toBe(true);
+    }
+  });
+
+  it('sends only the ID found in a pasted link, and clears the field once it is active', async () => {
+    const h = entering(PORTAL);
+    await h.api._activateLicense();
+    expect(h.keys).toEqual([SUB]);
+    expect(h.labels).toEqual(['validating']);
+    expect(h.sent).toEqual(['SET_LICENSE_KEY', 'GET_PREMIUM_STATUS']);
+    expect($('license-key-input').value).toBe('');
+    expect(error().hidden).toBe(true);
+    expect($('btn-activate-license').textContent).toBe('activateLicense');
+    expect($('btn-activate-license').disabled).toBe(false);
+  });
+
+  it('says it is looking up the subscription for a transaction ID', async () => {
+    const h = entering('Transaction ID: ' + TXN.toUpperCase());
+    await h.api._activateLicense();
+    expect(h.keys).toEqual([TXN]);
+    expect(h.labels).toEqual(['lookingUpSubscription']);
+  });
+
+  it('hides the previous message once the field holds an ID', async () => {
+    const h = entering('hello');
+    await h.api._activateLicense();
+    expect(error().hidden).toBe(false);
+    $('license-key-input').value = SUB;
+    await h.api._activateLicense();
+    expect(error().hidden).toBe(true);
+    expect(h.keys).toEqual([SUB]);
+  });
+
+  it('shows the message for the kind the background read', async () => {
+    const h = entering(SUB, { error: 'invalid_format', kind: 'several_ids' });
+    await h.api._activateLicense();
+    expect(error()).toEqual({ text: 'licenseEntrySeveralIds', hidden: false });
+    expect($('license-key-input').value).toBe(SUB);
+  });
+
+  it('keeps the generic message for an invalid_format that names no kind', async () => {
+    const h = entering(SUB, { error: 'invalid_format' });
+    await h.api._activateLicense();
+    expect(error()).toEqual({ text: 'licenseInvalidFormat', hidden: false });
+  });
+
+  it('shows a refusal as a sentence', async () => {
+    const h = entering(SUB, { error: 'subscription_not_found' });
+    await h.api._activateLicense();
+    expect(error()).toEqual({ text: 'Abonnement introuvable', hidden: false });
+  });
+
+  it('says so when a transaction ID belongs to the other app (Sync for Proton)', async () => {
+    // /txn-to-sub answers subscription_wrong_product; the background passes it on as it came.
+    const h = entering('Transaction ID: ' + TXN, { error: 'subscription_wrong_product' });
+    await h.api._activateLicense();
+    expect(h.keys).toEqual([TXN]);
+    expect(error()).toEqual({ text: 'Cet abonnement n\'appartient pas à Mail Checker', hidden: false });
+    expect($('license-key-input').value).toBe('Transaction ID: ' + TXN);
+  });
+
+  it('hands the button back when the message fails, and says the activation failed', async () => {
+    const h = entering(SUB, new Error('Receiving end does not exist'));
+    await h.api._activateLicense();
+    expect($('btn-activate-license').disabled).toBe(false);
+    expect($('btn-activate-license').textContent).toBe('activateLicense');
+    // The fallback label, as a sentence (the stub answers the key itself).
+    expect(error()).toEqual({ text: 'LicenseActivationFailed', hidden: false });
+    expect(h.quiet.warn).toHaveBeenCalledWith('[Options] Activate failed:', 'Receiving end does not exist');
+  });
+
+  it('gives every kind without an ID a message of its own', () => {
+    const { api } = build();
+    const kinds = ProtonLicenseEntry.KINDS.filter(k => !['valid', 'valid_in_text', 'empty'].includes(k));
+    const keys = kinds.map(k => api._licenseEntryMessage(k));
+    expect(keys).not.toContain('licenseInvalidFormat');
+    expect(new Set(keys).size).toBe(kinds.length);
+    expect(api._licenseEntryMessage(undefined)).toBe('licenseInvalidFormat');
+    expect(api._licenseEntryMessage('something_new')).toBe('licenseInvalidFormat');
+  });
+
+  it('runs on the Activate button, and Enter in the field clicks it', () => {
+    expect(SRC).toContain("btnActivate.addEventListener('click', () => _activateLicense())");
+    const keydown = SRC.slice(SRC.indexOf("licenseInput.addEventListener('keydown'"));
+    expect(keydown.slice(0, 200)).toContain('btnActivate.click()');
+  });
+
+  it('never logs what was entered', () => {
+    expect(lift('_activateLicense').match(/console\.\w+\([^)]*\)/g))
+      .toEqual(["console.warn('[Options] Activate failed:', e.message)"]);
   });
 });

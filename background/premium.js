@@ -99,7 +99,8 @@ const ProtonPremium = (() => {
   // renewal-unstable, but we do accept them as *input* and resolve to a sub_
   // via the proxy, helpful for users who only have the txn_ from their invoice.
   // Paddle IDs are ULIDs: 26 lowercase Crockford base32 characters (no i, l,
-  // o, u), the first one 0-7. Input is trimmed and lowercased first.
+  // o, u), the first one 0-7. lib/license-entry.js finds the ID in what the
+  // user entered; these check it again before any request.
   const KEY_PATTERN = /^sub_[0-7][0-9a-hjkmnp-tv-z]{25}$/;
   const TXN_PATTERN = /^txn_[0-7][0-9a-hjkmnp-tv-z]{25}$/;
   // Paddle creates the subscription a few seconds after checkout.completed,
@@ -497,14 +498,24 @@ const ProtonPremium = (() => {
   function openPaymentPage() { return browser.tabs.create({ url: CHECKOUT_URL }); }
 
   /**
-   * Store and validate a new license key. Accepts a `sub_xxx` directly, or a
-   * Paddle `txn_xxx` that we resolve to its subscription via the proxy.
-   * Resolution polls briefly because Paddle creates the subscription async
-   * after a transaction settles.
+   * Store and validate a new license key. Accepts a `sub_xxx`, or a Paddle
+   * `txn_xxx` that we resolve to its subscription via the proxy, alone or in
+   * the text the user copied: lib/license-entry.js, shared with the options
+   * page, finds it. Resolution polls briefly because Paddle creates the
+   * subscription async after a transaction settles.
+   *
+   * Text without a usable ID is refused with invalid_format, as before, and
+   * its kind for the options page's message. Only a well-formed ID is ever
+   * sent to the proxy.
    */
   async function setLicenseKey(key) {
     if (typeof key !== 'string') return { error: 'invalid_format' };
-    let id = key.trim().toLowerCase();
+    const entry = ProtonLicenseEntry.parse(key);
+    // The kind and the length only: the text may be an email address, and
+    // an ID is a license key.
+    debugLog('[ProtonPremium] License entry:', entry.kind, 'length:', key.length);
+    if (!entry.id) return { error: 'invalid_format', kind: entry.kind };
+    let id = entry.id;
 
     // If the user pasted a transaction ID, look up the subscription.
     if (id.startsWith('txn_')) {
@@ -533,7 +544,8 @@ const ProtonPremium = (() => {
     await _finishCheck(kind, result);
 
     if (kind === 'ok') {
-      debugLog('[ProtonPremium] License activated:', _maskKey(id), 'status:', _lastStatus, 'plan:', _billingInterval);
+      // No key, not even masked: it came from the text the user entered.
+      debugLog('[ProtonPremium] License activated, status:', _lastStatus, 'plan:', _billingInterval);
       return { success: true };
     }
     if (kind === 'hold') {

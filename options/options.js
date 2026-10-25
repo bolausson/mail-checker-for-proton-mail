@@ -2106,38 +2106,59 @@
     browser.runtime.sendMessage({ type: 'OPEN_PAYMENT_PAGE' });
   });
 
-  btnActivate.addEventListener('click', async () => {
-    licenseError.classList.add('hidden');
-    const key = (licenseInput.value || '').trim();
-    if (!key) return;
+  btnActivate.addEventListener('click', () => _activateLicense());
 
-    // Swap the button into a progress state. "Looking up…" is shown when the
-    // user pastes a transaction ID: the proxy may poll Paddle for a few
-    // seconds while the subscription is being created server-side.
+  // The field takes whatever the user copied: the ID alone, a line or a link
+  // with the ID in it, or something that is not an ID at all. It is read the
+  // way the background reads it (lib/license-entry.js): text without a usable
+  // ID is answered here at once, and only the ID found is sent.
+  async function _activateLicense() {
+    licenseError.classList.add('hidden');
+    const entry = ProtonLicenseEntry.parse(licenseInput.value || '');
+    if (entry.kind === 'empty') return;
+    if (!entry.id) {
+      _showLicenseError(_licenseEntryMessage(entry.kind));
+      return;
+    }
+
+    // Swap the button into a progress state. "Looking up…" is shown for a
+    // transaction ID: the proxy may poll Paddle for a few seconds while the
+    // subscription is being created server-side.
     const originalLabel = btnActivate.textContent;
-    const isTxn = /^txn_[a-z0-9]+$/i.test(key);
     btnActivate.disabled = true;
-    btnActivate.textContent = isTxn
+    btnActivate.textContent = entry.id.startsWith('txn_')
       ? ProtonI18n.t('lookingUpSubscription')
       : ProtonI18n.t('validating');
 
-    const result = await browser.runtime.sendMessage({ type: 'SET_LICENSE_KEY', key });
-
-    btnActivate.disabled = false;
-    btnActivate.textContent = originalLabel;
+    // Handed back in `finally`: a rejected message (background restarting)
+    // would otherwise leave the button disabled and reading "Validating…".
+    let result = null;
+    try {
+      result = await browser.runtime.sendMessage({ type: 'SET_LICENSE_KEY', key: entry.id });
+    } catch (e) {
+      console.warn('[Options] Activate failed:', e.message);
+    } finally {
+      btnActivate.disabled = false;
+      btnActivate.textContent = originalLabel;
+    }
 
     if (result && result.success) {
       licenseInput.value = '';
       await loadPremium();
-    } else {
-      const code = result && result.error;
-      const message = code === 'invalid_format'
-        ? ProtonI18n.t('licenseInvalidFormat')
-        : _sentence(_errLabel(code, 'licenseActivationFailed'));
-      licenseError.textContent = message;
-      licenseError.classList.remove('hidden');
+      return;
     }
-  });
+    const code = result && result.error;
+    // invalid_format comes with the kind the background read, so its message
+    // matches this page's; an answer without one keeps the generic text.
+    _showLicenseError(code === 'invalid_format'
+      ? _licenseEntryMessage(result.kind)
+      : _sentence(_errLabel(code, 'licenseActivationFailed')));
+  }
+
+  function _showLicenseError(text) {
+    licenseError.textContent = text;
+    licenseError.classList.remove('hidden');
+  }
 
   licenseInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
@@ -2395,6 +2416,21 @@
       if (label && label !== key) return label;
     }
     return ProtonI18n.t(fallbackKey);
+  }
+
+  // What the key field says about text without a usable ID, by the kind
+  // lib/license-entry.js gives it. No kind (an older background) or an
+  // unknown one keeps the generic message.
+  function _licenseEntryMessage(kind) {
+    switch (kind) {
+      case 'several_ids': return ProtonI18n.t('licenseEntrySeveralIds');
+      case 'play_order': return ProtonI18n.t('licenseEntryPlayOrder');
+      case 'mistyped_txn_id': return ProtonI18n.t('licenseEntryMistypedTxnId');
+      case 'mistyped_sub_id': return ProtonI18n.t('licenseEntryMistypedSubId');
+      case 'email': return ProtonI18n.t('licenseEntryEmail');
+      case 'not_an_id': return ProtonI18n.t('licenseEntryNotAnId');
+      default: return ProtonI18n.t('licenseInvalidFormat');
+    }
   }
 
   // Most err_ labels are lowercase fragments written for the grace notice's

@@ -103,6 +103,7 @@ module.exports = [
         ProtonAccountLimit: 'readonly',
         ProtonNotificationRules: 'readonly',
         ProtonProSettings: 'readonly',
+        ProtonLicenseEntry: 'readonly',
         ProtonI18n: 'readonly',
         ProtonDialog: 'readonly',
         module: 'readonly',

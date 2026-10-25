@@ -1,9 +1,9 @@
 /**
  * License states and check scheduling in background/premium.js.
  *
- * Every /validate answer the licence proxy can give (wire contract 3,
- * revision 2026-10-19.2, and every answer the contract-1 proxy gave, which a
- * 1.14.x upgrade can still meet) is run through activation and through a
+ * Every /validate answer the licence proxy can give (wire contract 3, and
+ * every answer the contract-1 proxy gave, which a 1.14.x upgrade can still
+ * meet) is run through activation and through a
  * check of a confirmed and an unconfirmed key. Then the rules around it: the
  * 1.14.7 upgrade, the check cadence and its stamp, the stale-result guard, the
  * follow-up after "Update payment", the nudge, held keys next to grace and
@@ -21,6 +21,9 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 
 const SRC = readFileSync(join(__dirname, '..', 'background', 'premium.js'), 'utf-8');
+// Loaded before premium.js in the background (manifest.json), as here.
+const ProtonLicenseEntry = new Function(
+  readFileSync(join(__dirname, '..', 'lib', 'license-entry.js'), 'utf-8') + '\nreturn ProtonLicenseEntry;')();
 
 const MIN = 60 * 1000;
 const HOUR = 60 * MIN;
@@ -103,6 +106,7 @@ function makeProxy() {
 function boot({ local = {}, sync = {}, env } = {}) {
   const e = env || { local: makeArea(local), sync: makeArea(sync), alarms: makeAlarms(), proxy: makeProxy() };
   if (!e.timeouts) e.timeouts = [];
+  if (!e.logs) e.logs = [];
   const browser = {
     storage: { local: e.local, sync: e.sync },
     alarms: e.alarms,
@@ -110,8 +114,10 @@ function boot({ local = {}, sync = {}, env } = {}) {
   };
   // The real AbortSignal, with every timeout it is asked for recorded.
   const abortSignal = { timeout: (ms) => { e.timeouts.push(ms); return AbortSignal.timeout(ms); } };
-  const P = new Function('browser', 'fetch', 'debugLog', 'AbortSignal', SRC + '\nreturn ProtonPremium;')(
-    browser, (url, opts) => e.proxy.fetch(url, opts), () => {}, abortSignal);
+  // Every debugLog line, as the arguments it was given.
+  const debugLog = (...args) => { e.logs.push(args); };
+  const P = new Function('browser', 'fetch', 'debugLog', 'AbortSignal', 'ProtonLicenseEntry', SRC + '\nreturn ProtonPremium;')(
+    browser, (url, opts) => e.proxy.fetch(url, opts), debugLog, abortSignal, ProtonLicenseEntry);
   return { P, env: e, local: e.local, sync: e.sync, alarms: e.alarms, proxy: e.proxy };
 }
 
@@ -1250,27 +1256,125 @@ describe('the ID the user types', () => {
     expect(w.local.data._premiumKey).toBe(SUB_A);
   });
 
+  // invalid_format as before, for any caller that only knows that code, and
+  // the kind lib/license-entry.js gave the text, for the options page.
   it.each([
-    'sub_123',
-    'sub_01' + 'a'.repeat(23),
-    'sub_01' + 'a'.repeat(25),
-    'sub_81' + 'a'.repeat(24),
-    'sub_01' + 'i'.repeat(24),
-    'sub_01' + 'u'.repeat(24),
-    'sub-01' + 'a'.repeat(24),
-    'txn_12',
-    'txn_01' + 'o'.repeat(24),
-    'hello',
-    '',
-  ])('refuses %j at once, without a request', async (input) => {
+    ['sub_123', 'mistyped_sub_id'],
+    ['sub_01' + 'a'.repeat(23), 'mistyped_sub_id'],
+    ['sub_01' + 'a'.repeat(25), 'mistyped_sub_id'],
+    ['sub_81' + 'a'.repeat(24), 'mistyped_sub_id'],
+    ['sub_01' + 'i'.repeat(24), 'mistyped_sub_id'],
+    ['sub_01' + 'u'.repeat(24), 'mistyped_sub_id'],
+    ['sub-01' + 'a'.repeat(24), 'mistyped_sub_id'],
+    ['txn_12', 'mistyped_txn_id'],
+    ['txn_01' + 'o'.repeat(24), 'mistyped_txn_id'],
+    ['hello', 'not_an_id'],
+    ['', 'empty'],
+  ])('refuses %j at once, without a request', async (input, kind) => {
     const w = await start();
-    expect(await w.P.setLicenseKey(input)).toEqual({ error: 'invalid_format' });
+    expect(await w.P.setLicenseKey(input)).toEqual({ error: 'invalid_format', kind });
     expect(w.proxy.calls).toHaveLength(0);
   });
 
   it('refuses a non-string', async () => {
     const w = await start();
     expect(await w.P.setLicenseKey(null)).toEqual({ error: 'invalid_format' });
+  });
+
+  // Made-up IDs for the text a user enters: 07 where every real Paddle ID (a
+  // ULID, whose first characters are its creation time) starts with 01, so
+  // none of them can be a real one. Written out whole, not split up to get
+  // past a scanner.
+  const ENTERED_SUB = 'sub_07h04vsc0qhwtsbsxh3422wjs4';
+  const ENTERED_TXN = 'txn_07h04vsc0qhwtsbsxh3422wjs4';
+  const OTHER_SUB = 'sub_07' + 'b'.repeat(24);
+  const OTHER_TXN = 'txn_07' + 'b'.repeat(24);
+
+  // The background is the authority: whatever reaches it, the proxy gets a
+  // well-formed ID or nothing at all.
+  it.each([
+    ['an email address', 'name@example.com', 'email'],
+    ['"sub_" and then an email address', 'sub_name@example.com', 'email'],
+    ['the prefix alone', 'sub_', 'mistyped_sub_id'],
+    ['the transaction prefix alone', 'txn_', 'mistyped_txn_id'],
+    ['a Google Play order number', 'Gpa.1234-5678-9012-34567', 'play_order'],
+    ['two subscription IDs', ENTERED_SUB + ' ' + OTHER_SUB, 'several_ids'],
+    ['two transaction IDs', ENTERED_TXN + '\n' + OTHER_TXN, 'several_ids'],
+    ['a broken ID pasted against a good one', ENTERED_SUB + OTHER_SUB.slice(0, -3), 'mistyped_sub_id'],
+    ['a broken transaction ID against a good one', ENTERED_TXN + OTHER_TXN.slice(0, -3), 'mistyped_txn_id'],
+    ['a broken subscription ID beside a transaction ID', ENTERED_SUB.slice(0, -1) + ' ' + ENTERED_TXN, 'mistyped_sub_id'],
+    ['a transaction ID run straight into a subscription ID', ENTERED_TXN + ENTERED_SUB, 'several_ids'],
+    ['a subscription ID run straight into a transaction ID', ENTERED_SUB + ENTERED_TXN, 'several_ids'],
+    ['a cut transaction ID run into a subscription ID', ENTERED_TXN.slice(0, -3) + ENTERED_SUB, 'mistyped_txn_id'],
+    ['a cut ID run into the "txn-" typo', ENTERED_SUB.slice(0, -3) + 'txn-' + ENTERED_TXN.slice(4), 'mistyped_txn_id'],
+    ['a cut transaction ID in a link run into an address',
+      'https://apps.example/checkout.html?_ptxn=' + ENTERED_TXN.slice(0, -4) + '&email=name@example.com', 'mistyped_txn_id'],
+    ['an ID one character too long', ENTERED_SUB + 'x', 'mistyped_sub_id'],
+    ['an ID in capitals, one character short', ENTERED_SUB.slice(0, -1).toUpperCase(), 'mistyped_sub_id'],
+    ['a portal link without an ID', 'https://customer-portal.paddle.com/cpl_07' + 'c'.repeat(24), 'not_an_id'],
+    ['invisible characters only', '​‎⁦﻿', 'empty'],
+    ['whitespace only', ' \n\t ', 'empty'],
+  ])('refuses %s without a request and without storing anything', async (_label, input, kind) => {
+    const w = await start();
+    expect(await w.P.setLicenseKey(input)).toEqual({ error: 'invalid_format', kind });
+    expect(w.proxy.calls).toEqual([]);
+    expect(w.local.data).toEqual({});
+    expect(w.sync.data).toEqual({});
+    expect(w.alarms.map.size).toBe(0);
+    expect(w.P.getStatus().keyStored).toBe(false);
+  });
+
+  it.each([
+    ['a labelled line', 'Subscription ID: ' + ENTERED_SUB + '\n'],
+    ['a Paddle portal link', 'https://customer-portal.paddle.com/cpl_07' + 'c'.repeat(24)
+      + '?action=overview&subscription_id=' + ENTERED_SUB + '&token=pga_example'],
+    ['an ID split by a line break', ENTERED_SUB.slice(0, 14) + '\n' + ENTERED_SUB.slice(14)],
+    ['"sub_" typed in front of the pasted ID', 'sub_' + ENTERED_SUB],
+    ['a copy of it shortened in a link', 'Subscription ID: ' + ENTERED_SUB
+      + '\nhttps://apps.example/success.html?_sub=' + ENTERED_SUB.slice(0, 19) + '...'],
+    ['zero-width and bidi characters', '‪' + ENTERED_SUB.slice(0, 9) + '​' + ENTERED_SUB.slice(9) + '‏‬'],
+    ['full-width characters', [...ENTERED_SUB].map(c => String.fromCharCode(c.charCodeAt(0) + 0xFEE0)).join('')],
+  ])('sends only the subscription ID found in %s', async (_label, input) => {
+    const w = await start();
+    expect(await w.P.setLicenseKey(input)).toEqual({ success: true });
+    expect(w.proxy.calls.map(c => [c.path, c.sub])).toEqual([['/validate', ENTERED_SUB]]);
+    expect(w.local.data._premiumKey).toBe(ENTERED_SUB);
+  });
+
+  it('looks up the transaction ID found in a receipt line, and only that', async () => {
+    const w = await start();
+    const res = await w.P.setLicenseKey('Receipt | ' + ENTERED_TXN.toUpperCase() + ' | EUR 2.49 | name@example.com');
+    expect(res).toEqual({ success: true });
+    expect(w.proxy.calls.map(c => c.path)).toEqual(['/txn-to-sub', '/validate']);
+    expect(w.proxy.calls[0].txn).toBe(ENTERED_TXN);
+    expect(w.local.data._premiumKey).toBe(SUB_B);
+  });
+
+  it('takes the subscription ID when the text holds a transaction ID too, as the success page does', async () => {
+    const w = await start();
+    const res = await w.P.setLicenseKey('Subscription ID: ' + ENTERED_SUB + '\nTransaction ID: ' + ENTERED_TXN);
+    expect(res).toEqual({ success: true });
+    expect(w.proxy.calls.map(c => [c.path, c.sub, c.txn])).toEqual([['/validate', ENTERED_SUB, null]]);
+  });
+
+  it('logs the kind and the length of what was entered, never the text', async () => {
+    const w = await start();
+    const email = 'name@example.com';
+    const line = 'Subscription ID: ' + ENTERED_SUB + ' sent to ' + email;
+    await w.P.setLicenseKey(email);
+    await w.P.setLicenseKey(line);
+    await w.P.setLicenseKey(ENTERED_TXN);
+    const printed = w.env.logs.map(args => args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '));
+    expect(printed).toContain('[ProtonPremium] License entry: email length: ' + email.length);
+    expect(printed).toContain('[ProtonPremium] License entry: valid_in_text length: ' + line.length);
+    expect(printed).toContain('[ProtonPremium] License entry: valid length: ' + ENTERED_TXN.length);
+    // Not the address, and no key (one entered, SUB_B looked up), not even
+    // masked.
+    expect(printed.length).toBeGreaterThan(3);
+    for (const p of printed) {
+      expect(p).not.toMatch(/@|example|sub_|txn_/);
+      for (const id of [ENTERED_SUB, ENTERED_TXN, SUB_B]) expect(p).not.toContain(id.slice(6, 14));
+    }
   });
 
   it('resolves a transaction ID to its subscription', async () => {
@@ -1289,7 +1393,18 @@ describe('the ID the user types', () => {
     expect(validateCalls(w)).toHaveLength(0);
   });
 
-  // Contract 3 (revision 2026-10-19.2): /txn-to-sub answers a transaction it
+  // The ID the lookup answers is checked as an entered one is: /validate
+  // never gets anything but a well-formed subscription ID.
+  it('refuses a malformed subscription ID from the lookup, and validates and stores nothing', async () => {
+    const w = await start();
+    w.proxy.txn = () => answer({ ok: true, subscription_id: OTHER_SUB.slice(0, -1) + 'o', status: 'active' });
+    expect(await w.P.setLicenseKey(ENTERED_TXN)).toEqual({ error: 'invalid_format' });
+    expect(w.proxy.calls.map(c => c.path)).toEqual(['/txn-to-sub']);
+    expect(w.local.data).toEqual({});
+    expect(w.P.getStatus().keyStored).toBe(false);
+  });
+
+  // Contract 3: /txn-to-sub answers a transaction it
   // cannot resolve with ok:false and an error code. Only not_ready is waited
   // out; any other code goes back to the options page as it came, and there
   // is no subscription ID, so nothing is stored.

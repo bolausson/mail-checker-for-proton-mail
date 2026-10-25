@@ -1325,8 +1325,7 @@ const ProtonAccounts = (() => {
    * SUCCESSFUL Proton response routinely carries secrets: auth/v4/refresh
    * returns access and refresh tokens, core/v4/users returns private key
    * material, mail/v4/messages returns bodies. None of that may reach a file
-   * the user exports and mails to a stranger, and the AMO reviewer notes say in
-   * writing that it does not. So success logs status only.
+   * the user exports and mails to a stranger. So success logs status only.
    *
    * An ERROR body is different: Proton's is {Code, Error, Details}, which is
    * diagnostic by design and carries no content. That is the part worth having,

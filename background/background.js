@@ -18,8 +18,8 @@
   // verify.proton.me, which nothing else in the login flow does: 2FA, FIDO2 and
   // the legacy mailbox password all stay inside our own popup. Arming it for
   // those too, as this used to, left header-stripping rules installed on three
-  // Proton origins for the whole of an ordinary sign-in, and made our AMO
-  // reviewer notes ("during the CAPTCHA window only") untrue.
+  // Proton origins for the whole of an ordinary sign-in, instead of during
+  // the CAPTCHA window only.
   //
   // Chrome MV3 and Firefox MV3 both run it through declarativeNetRequest
   // dynamic rules in ProtonCSPShim, which is fully feature-detected.
