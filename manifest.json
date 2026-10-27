@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Mail Checker for Proton Mail",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": "Unread count, notifications and reading for one Proton Mail account. Pro adds reply and compose, attachments, RSVP, more accounts.",
 
   "browser_specific_settings": {

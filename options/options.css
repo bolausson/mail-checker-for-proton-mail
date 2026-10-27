@@ -606,6 +606,12 @@ input[type="color"] {
   color: var(--text);
   flex: 1;
 }
+/* "185 days ago" is short, but with flex: 1 it shrinks to its longest word
+   whenever the row gets tight, so it broke over up to five lines. Keep it on
+   one line; the plan and period rows may still wrap. */
+#license-last-validated {
+  white-space: nowrap;
+}
 .license-validation__notice {
   margin-top: 12px;
   padding: 10px 12px;
@@ -629,13 +635,16 @@ input[type="color"] {
   border: 1px solid #d9d0ff;
   color: #3b2a99;
 }
-/* The outcome of a manual "Validate now", for a few seconds. It sits left of the
-   button, in the space the flexible value leaves, so the button does not move;
-   min-width: 0 lets a long translation wrap instead of pushing the button down. */
+/* The outcome of a manual "Validate now", for a few seconds. In a wrapping
+   flex row it never wraps itself: it either fits beside the button or pushes
+   the button to the next line. So it gets a line of its own under the button,
+   right-aligned, and the button stays where it was. */
 .license-validation__result {
   font-size: 13px;
   min-width: 0;
   text-align: right;
+  order: 1;
+  flex-basis: 100%;
 }
 .license-validation__result--ok {
   color: #2b7a3d;

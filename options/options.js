@@ -2114,6 +2114,15 @@
   // ID is answered here at once, and only the ID found is sent.
   async function _activateLicense() {
     licenseError.classList.add('hidden');
+    // The field takes text of any length: a maxlength would cut a longer
+    // paste, in places short of the limit, and the cut text would be searched
+    // as if it were all that was pasted. Text longer than the limit is
+    // answered as too long, even where cleaning (spaces, invisible
+    // characters) would take it back under.
+    if ((licenseInput.value || '').length > ProtonLicenseEntry.MAX_CHARS) {
+      _showLicenseError(_licenseEntryMessage('too_long'));
+      return;
+    }
     const entry = ProtonLicenseEntry.parse(licenseInput.value || '');
     if (entry.kind === 'empty') return;
     if (!entry.id) {
@@ -2423,6 +2432,7 @@
   // unknown one keeps the generic message.
   function _licenseEntryMessage(kind) {
     switch (kind) {
+      case 'too_long': return ProtonI18n.t('licenseEntryTooLong');
       case 'several_ids': return ProtonI18n.t('licenseEntrySeveralIds');
       case 'play_order': return ProtonI18n.t('licenseEntryPlayOrder');
       case 'mistyped_txn_id': return ProtonI18n.t('licenseEntryMistypedTxnId');

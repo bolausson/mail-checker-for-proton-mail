@@ -848,12 +848,14 @@ describe('LICENSE_NUDGE on open', () => {
 describe('the license key field', () => {
   // Made-up IDs: 07 where every real Paddle ID (a ULID, whose first
   // characters are its creation time) starts with 01, so none of them can be
-  // a real one. Written out whole, not split up to get past a scanner.
+  // a real one.
   const SUB = 'sub_07h04vsc0qhwtsbsxh3422wjs4';
   const SUB2 = 'sub_07' + 'b'.repeat(24);
   const TXN = 'txn_07h04vsc0qhwtsbsxh3422wjs4';
   const PORTAL = 'https://customer-portal.paddle.com/cpl_07' + 'c'.repeat(24)
     + '?action=overview&subscription_id=' + SUB;
+  // An ID and then one character more than the parser searches.
+  const FULL = SUB + ' ' + 'x'.repeat(ProtonLicenseEntry.MAX_CHARS - SUB.length);
 
   // The page with `text` in the field. SET_LICENSE_KEY records the key it is
   // sent and the button's label while it runs, then answers `answer`.
@@ -890,6 +892,12 @@ describe('the license key field', () => {
     ['an email address', 'name@example.com', 'licenseEntryEmail'],
     ['"sub_" and then an email address', 'sub_name@example.com', 'licenseEntryEmail'],
     ['anything else', 'hello', 'licenseEntryNotAnId'],
+    // Not searched at all: the ID in it is not sent.
+    ['a text too long to search, with an ID in it', FULL, 'licenseEntryTooLong'],
+    // Too long as pasted, even when trimming would take it back under the
+    // limit.
+    ['a text too long that trimming would take under the limit',
+      FULL.slice(0, -3) + '   ', 'licenseEntryTooLong'],
   ])('answers %s at once, and sends nothing', async (_label, text, key) => {
     const h = entering(text);
     await h.api._activateLicense();
@@ -898,6 +906,21 @@ describe('the license key field', () => {
     // Left as it was, to be corrected.
     expect($('license-key-input').value).toBe(text);
     expect($('btn-activate-license').disabled).toBe(false);
+  });
+
+  it('takes text of any length, so the browser never cuts a paste', () => {
+    // Browsers cut at a maxlength, but short of it in places (before an
+    // emoji's surrogate pair, or a line break Firefox trims after the cut),
+    // so a cut paste could be searched as if it were all there was.
+    expect(FULL).toHaveLength(ProtonLicenseEntry.MAX_CHARS + 1);
+    expect($('license-key-input').hasAttribute('maxlength')).toBe(false);
+  });
+
+  it('sends the ID in the longest text that is still searched', async () => {
+    const h = entering(FULL.slice(0, -1));
+    await h.api._activateLicense();
+    expect(h.keys).toEqual([SUB]);
+    expect(error().hidden).toBe(true);
   });
 
   it('does nothing for an empty field, or one with invisible characters only', async () => {
@@ -957,7 +980,7 @@ describe('the license key field', () => {
     expect(error()).toEqual({ text: 'Abonnement introuvable', hidden: false });
   });
 
-  it('says so when a transaction ID belongs to the other app (Sync for Proton)', async () => {
+  it('says so when a transaction ID belongs to another product', async () => {
     // /txn-to-sub answers subscription_wrong_product; the background passes it on as it came.
     const h = entering('Transaction ID: ' + TXN, { error: 'subscription_wrong_product' });
     await h.api._activateLicense();

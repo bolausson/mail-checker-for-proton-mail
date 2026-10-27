@@ -1044,15 +1044,37 @@ body.hide-premium-ui #preview-attachments {
   pointer-events: auto;
 }
 
+/* The Undo action is drawn in the toast's own text colour; weight and an
+   underline mark it as an action, not a hue. In most themes the toast is an
+   inverse surface (dark in light schemes, light in dark ones; Modern's is
+   translucent glass), and the accent tokens are tuned for the normal
+   surfaces, so an accent here fell below AA in every dark palette, as low as
+   1.2:1. The toast text holds AA in every theme, so the action does too.
+   tests/toast-undo-contrast.test.js keeps it that way. A button does not
+   inherit the font either, so Undo takes the toast's typeface explicitly. */
 .toast-undo {
   background: none;
   border: none;
-  color: var(--purple-light);
+  color: inherit;
+  font-family: inherit;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   padding: 0;
   text-decoration: underline;
+  text-decoration-color: currentColor;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.toast-undo:hover {
+  text-decoration-thickness: 2px;
+}
+
+.toast-undo:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 
 /* Keyboard focus indicator */

@@ -4397,6 +4397,11 @@ const ProtonAccounts = (() => {
         || [];
       if (attendees.length === 0) return null;
 
+      // Same cold-start race as sendCalendarRsvp: _decryptAttendeeEmails
+      // answers {} while the keys are still unlocking, which blanks every
+      // attendee's email. Today the popup's earlier GET_MESSAGE has always
+      // unlocked them by now, but that is call order, not a guard.
+      await ensureKeysUnlocked(accountId);
       // Try to decrypt attendee emails from the encrypted event data
       const emailMap = await _decryptAttendeeEmails(accountId, full);
 

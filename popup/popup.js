@@ -1777,9 +1777,9 @@
 
   /**
    * Keep the preview's read/unread button in step with the open message. Its
-   * title names what a click does and the click reads the state back from
-   * the button, so after "Mark as read" (or its Undo) the same button offers
-   * the opposite. A message other than the open one leaves it alone.
+   * title and icon name what a click does and the click reads the state back
+   * from the button, so after "Mark as read" (or its Undo) the same button
+   * offers the opposite. A message other than the open one leaves it alone.
    */
   function _syncPreviewReadButton(msgId, unread) {
     if (!_selectedMsg || _selectedMsg.ID !== msgId) return;
@@ -1790,6 +1790,7 @@
     if (!btn) return;
     btn.dataset.unread = unread ? '1' : '0';
     btn.title = ProtonI18n.t(unread ? 'markAsRead' : 'markAsUnread');
+    _setHTML(btn, unread ? ICONS.markRead : ICONS.markUnread);
   }
 
   async function handleArchive(e, msgId, accountId) {
@@ -2662,6 +2663,9 @@
     // Switching to another message wipes the reply editor a few lines below, so
     // this is an exit from the reply just as much as closing the preview is.
     if (!await _confirmLeavingReply(opts && opts.force)) return;
+    // Pickers and the AI panel (cancelling its request) belong to the reply
+    // being left. A click elsewhere closes them already; j/k and Enter do not.
+    if (typeof PopupEditorToolbar !== 'undefined') PopupEditorToolbar.closeAllPopups();
     _selectedMsg = msg;
     // readWhileOpen: reopened (draft, pop-out) after this popup marked it
     // read, so it is not in the unread list and must not close for that.
@@ -2941,9 +2945,10 @@
         icon: isStarred ? ICONS.starFilled : ICONS.star,
         handler: (e) => handleStar(e, msg.ID, accountId, isStarred) },
       // On a read message this is "Mark as unread", so the click must send
-      // MARK_UNREAD. The state lives on the button (_syncPreviewReadButton).
+      // MARK_UNREAD, and it shows the closed envelope. The state lives on the
+      // button (_syncPreviewReadButton).
       { key: 'markRead', cls: 'action-read', title: isUnread ? ProtonI18n.t('markAsRead') : ProtonI18n.t('markAsUnread'),
-        icon: ICONS.markRead,
+        icon: isUnread ? ICONS.markRead : ICONS.markUnread,
         handler: (e) => (e.currentTarget.dataset.unread === '1'
           ? handleMarkRead(e, msg.ID, accountId)
           : handleMarkUnread(e, msg.ID, accountId)) },
@@ -5657,6 +5662,7 @@
   if (typeof PopupScribe !== 'undefined') {
     PopupScribe.init({
       sendMessage: (msg) => browser.runtime.sendMessage(msg),
+      connect: (info) => browser.runtime.connect(info),
       showToast,
       t: (...a) => ProtonI18n.t(...a),
       isPremium,
@@ -5877,7 +5883,11 @@
   const ICONS = {
     openWeb: '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M8.636 3.5a.5.5 0 0 0-.5-.5H1.5A1.5 1.5 0 0 0 0 4.5v10A1.5 1.5 0 0 0 1.5 16h10a1.5 1.5 0 0 0 1.5-1.5V7.864a.5.5 0 0 0-1 0V14.5a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5v-10a.5.5 0 0 1 .5-.5h6.636a.5.5 0 0 0 .5-.5z"/><path fill-rule="evenodd" d="M16 .5a.5.5 0 0 0-.5-.5h-5a.5.5 0 0 0 0 1h3.793L6.146 9.146a.5.5 0 1 0 .708.708L15 1.707V5.5a.5.5 0 0 0 1 0v-5z"/></svg>',
     exportEml: '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/></svg>',
-    markRead: '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8.47 1.318a1 1 0 0 0-.94 0l-6 3.2A1 1 0 0 0 1 5.4V14a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V5.4a1 1 0 0 0-.53-.882l-6-3.2ZM13.5 5.093 8 2.118 2.5 5.093v1.208l5.203 3.12a.5.5 0 0 0 .594 0L13.5 6.3V5.093ZM2.5 7.697V13.5h11V7.697L8.797 10.95a1.5 1.5 0 0 1-1.594 0L2.5 7.697Z"/></svg>',
+    // Read and unread name the action, as Proton's toolbar does: an open
+    // envelope marks read, a closed one marks unread. Bootstrap Icons
+    // envelope-open and envelope, as published.
+    markRead: '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8.47 1.318a1 1 0 0 0-.94 0l-6 3.2A1 1 0 0 0 1 5.4v.817l5.75 3.45L8 8.917l1.25.75L15 6.217V5.4a1 1 0 0 0-.53-.882zM15 7.383l-4.778 2.867L15 13.117zm-.035 6.88L8 10.082l-6.965 4.18A1 1 0 0 0 2 15h12a1 1 0 0 0 .965-.738ZM1 13.116l4.778-2.867L1 7.383v5.734ZM7.059.435a2 2 0 0 1 1.882 0l6 3.2A2 2 0 0 1 16 5.4V14a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V5.4a2 2 0 0 1 1.059-1.765z"/></svg>',
+    markUnread: '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M0 4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2zm2-1a1 1 0 0 0-1 1v.217l7 4.2 7-4.2V4a1 1 0 0 0-1-1zm13 2.383-4.708 2.825L15 11.105zm-.034 6.876-5.64-3.471L8 9.583l-1.326-.795-5.64 3.47A1 1 0 0 0 2 13h12a1 1 0 0 0 .966-.741M1 11.105l4.708-2.897L1 5.383z"/></svg>',
     archive: '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M0 2a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1v7.5a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 1 12.5V5a1 1 0 0 1-1-1V2zm2 3v7.5A1.5 1.5 0 0 0 3.5 14h9a1.5 1.5 0 0 0 1.5-1.5V5H2zm13-3H1v2h14V2zM5 7.5a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5z"/></svg>',
     trash: '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/><path fill-rule="evenodd" d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1zM4.118 4L4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4H4.118zM2.5 3V2h11v1h-11z"/></svg>',
     snooze: '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 3.5a.5.5 0 0 0-1 0V8a.5.5 0 0 0 .252.434l3.5 2a.5.5 0 0 0 .496-.868L8 7.71V3.5z"/><path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm7-8A7 7 0 1 1 1 8a7 7 0 0 1 14 0z"/></svg>',

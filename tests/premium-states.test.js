@@ -1283,8 +1283,7 @@ describe('the ID the user types', () => {
 
   // Made-up IDs for the text a user enters: 07 where every real Paddle ID (a
   // ULID, whose first characters are its creation time) starts with 01, so
-  // none of them can be a real one. Written out whole, not split up to get
-  // past a scanner.
+  // none of them can be a real one.
   const ENTERED_SUB = 'sub_07h04vsc0qhwtsbsxh3422wjs4';
   const ENTERED_TXN = 'txn_07h04vsc0qhwtsbsxh3422wjs4';
   const OTHER_SUB = 'sub_07' + 'b'.repeat(24);
@@ -1307,13 +1306,24 @@ describe('the ID the user types', () => {
     ['a subscription ID run straight into a transaction ID', ENTERED_SUB + ENTERED_TXN, 'several_ids'],
     ['a cut transaction ID run into a subscription ID', ENTERED_TXN.slice(0, -3) + ENTERED_SUB, 'mistyped_txn_id'],
     ['a cut ID run into the "txn-" typo', ENTERED_SUB.slice(0, -3) + 'txn-' + ENTERED_TXN.slice(4), 'mistyped_txn_id'],
+    // The address is taken out with the link run into it.
     ['a cut transaction ID in a link run into an address',
-      'https://apps.example/checkout.html?_ptxn=' + ENTERED_TXN.slice(0, -4) + '&email=name@example.com', 'mistyped_txn_id'],
+      'https://apps.example/checkout.html?_ptxn=' + ENTERED_TXN.slice(0, -4) + '&email=name@example.com', 'email'],
+    // Nor is a cut one made whole with the start of an address after it,
+    // with a space between or none.
+    ['a cut transaction ID in a link, then an address',
+      'https://apps.example/checkout.html?_ptxn=' + ENTERED_TXN.slice(0, -4) + ' name@example.com', 'mistyped_txn_id'],
+    ['a cut transaction ID run straight into an address', ENTERED_TXN.slice(0, -4) + 'name@example.com', 'email'],
+    // Another ID begun beside a whole one refuses it, even a copy of it.
+    ['a copy of the ID shortened in a link beside it', 'Subscription ID: ' + ENTERED_SUB
+      + '\nhttps://apps.example/success.html?_sub=' + ENTERED_SUB.slice(0, 19) + '...', 'mistyped_sub_id'],
     ['an ID one character too long', ENTERED_SUB + 'x', 'mistyped_sub_id'],
     ['an ID in capitals, one character short', ENTERED_SUB.slice(0, -1).toUpperCase(), 'mistyped_sub_id'],
     ['a portal link without an ID', 'https://customer-portal.paddle.com/cpl_07' + 'c'.repeat(24), 'not_an_id'],
     ['invisible characters only', '​‎⁦﻿', 'empty'],
     ['whitespace only', ' \n\t ', 'empty'],
+    // Not searched at all, so the ID in it is never sent either.
+    ['a text too long to search, with an ID in it', ENTERED_SUB + ' ' + 'x'.repeat(ProtonLicenseEntry.MAX_CHARS), 'too_long'],
   ])('refuses %s without a request and without storing anything', async (_label, input, kind) => {
     const w = await start();
     expect(await w.P.setLicenseKey(input)).toEqual({ error: 'invalid_format', kind });
@@ -1329,9 +1339,12 @@ describe('the ID the user types', () => {
     ['a Paddle portal link', 'https://customer-portal.paddle.com/cpl_07' + 'c'.repeat(24)
       + '?action=overview&subscription_id=' + ENTERED_SUB + '&token=pga_example'],
     ['an ID split by a line break', ENTERED_SUB.slice(0, 14) + '\n' + ENTERED_SUB.slice(14)],
+    // An address beside the ID is no second one, even one that holds an ID
+    // begun, also after an ID split by a line wrap.
+    ['a line with an address that holds an ID begun', ENTERED_SUB + ' me+sub_3@example.com'],
+    ['an ID split by a line wrap, then an address',
+      ENTERED_SUB.slice(0, 16) + '\n' + ENTERED_SUB.slice(16) + ' name@example.com'],
     ['"sub_" typed in front of the pasted ID', 'sub_' + ENTERED_SUB],
-    ['a copy of it shortened in a link', 'Subscription ID: ' + ENTERED_SUB
-      + '\nhttps://apps.example/success.html?_sub=' + ENTERED_SUB.slice(0, 19) + '...'],
     ['zero-width and bidi characters', '‪' + ENTERED_SUB.slice(0, 9) + '​' + ENTERED_SUB.slice(9) + '‏‬'],
     ['full-width characters', [...ENTERED_SUB].map(c => String.fromCharCode(c.charCodeAt(0) + 0xFEE0)).join('')],
   ])('sends only the subscription ID found in %s', async (_label, input) => {
@@ -1430,6 +1443,47 @@ describe('the ID the user types', () => {
     expect(await w.P.setLicenseKey(TXN_A)).toEqual({ error: 'paddle_server_error' });
     // Asked once: a server error is not a subscription still being created.
     expect(w.proxy.calls.map(c => c.path)).toEqual(['/txn-to-sub']);
+    expect(w.local.data).toEqual({});
+    expect(w.sync.data).toEqual({});
+    expect(w.alarms.map.size).toBe(0);
+    expect(w.P.getStatus().keyStored).toBe(false);
+  });
+
+  // not_ready is asked again every few seconds; the waits run on fake timers.
+  const lookups = (w) => w.proxy.calls.filter(c => c.path === '/txn-to-sub').length;
+
+  it('stops asking once a transaction is answered as having no subscription', async () => {
+    // A checkout that was canceled, or left unpaid for long, never gets a
+    // subscription: after not_ready it is answered subscription_not_found,
+    // and that answer goes back at once instead of being asked again.
+    const w = await start();
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout'] });
+    at(T0);
+    const answers = [{ ok: false, error: 'not_ready' }, { ok: false, error: 'subscription_not_found' }];
+    w.proxy.txn = () => answer(answers.shift() || { ok: false, error: 'not_ready' });
+    const pending = w.P.setLicenseKey(TXN_A);
+    await vi.advanceTimersByTimeAsync(60 * 1000);
+    expect(await pending).toEqual({ error: 'subscription_not_found' });
+    expect(lookups(w)).toBe(2);
+    expect(w.proxy.calls.map(c => c.path)).toEqual(['/txn-to-sub', '/txn-to-sub']);
+    expect(w.local.data).toEqual({});
+    expect(w.sync.data).toEqual({});
+    expect(w.alarms.map.size).toBe(0);
+    expect(w.P.getStatus().keyStored).toBe(false);
+  });
+
+  it('gives up on a transaction that stays not_ready, and stores nothing', async () => {
+    // A just-paid checkout whose subscription is not there yet: asked five
+    // times, then answered as still being created.
+    const w = await start();
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout'] });
+    at(T0);
+    w.proxy.txn = () => answer({ ok: false, error: 'not_ready' });
+    const pending = w.P.setLicenseKey(TXN_A);
+    await vi.advanceTimersByTimeAsync(60 * 1000);
+    expect(await pending).toEqual({ error: 'transaction_not_ready' });
+    expect(lookups(w)).toBe(5);
+    expect(w.proxy.calls.map(c => c.path)).not.toContain('/validate');
     expect(w.local.data).toEqual({});
     expect(w.sync.data).toEqual({});
     expect(w.alarms.map.size).toBe(0);

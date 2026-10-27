@@ -1981,6 +1981,21 @@ describe('error mapping', () => {
     expect(stub.streamRequest).not.toHaveBeenCalled();
   });
 
+  it('sends nothing when the caller aborts while the capability is read again', async () => {
+    // A panel closed during the recheck (an answer older than a minute) must
+    // not let the draft go out once the probes come back.
+    let settle;
+    const stub = stubAccounts({ settings: () => new Promise((resolve) => { settle = resolve; }) });
+    const controller = new AbortController();
+    const pending = run({ action: 'proofread', text: 'A draft.', signal: controller.signal });
+    await vi.waitFor(() => expect(stub.request).toHaveBeenCalledTimes(2));
+    controller.abort();
+    settle(flag(2));
+    expect(await pending).toStrictEqual({ ok: false, error: 'ABORTED' });
+    expect(stub.request).toHaveBeenCalledTimes(2);
+    expect(stub.streamRequest).not.toHaveBeenCalled();
+  });
+
   it('reports an abort during the stream as ABORTED and aborts the request', async () => {
     const controller = new AbortController();
     const stub = stubAccounts();
@@ -2070,6 +2085,14 @@ describe('repository contract', () => {
     const background = readFileSync(join(ROOT, 'background', 'background.js'), 'utf-8');
     expect(background).toContain("case 'AI_CAPABILITY'");
     expect(background).toContain("case 'AI_RUN_ACTION'");
+  });
+
+  it('background.js hands AI_RUN_ACTION a signal, so a closed panel can abort it', () => {
+    // tests/ai-cancel.test.js runs the cancel itself.
+    const background = readFileSync(join(ROOT, 'background', 'background.js'), 'utf-8');
+    const start = background.indexOf("case 'AI_RUN_ACTION'");
+    const block = background.slice(start, background.indexOf('\n      case ', start + 1));
+    expect(block).toMatch(/ProtonAIAssistant\.runAction\(\{[^}]*\bsignal: run \? run\.controller\.signal : undefined,/);
   });
 
   it('the popup still handles every error code', () => {

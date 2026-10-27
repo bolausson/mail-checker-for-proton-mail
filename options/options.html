@@ -50,6 +50,8 @@
       <div class="option-group" id="license-entry-group">
         <label for="license-key-input" data-i18n="licenseKey">License key</label>
         <div class="option-row">
+          <!-- No maxlength: text longer than ProtonLicenseEntry.MAX_CHARS is
+               answered as too long, not cut short without a word. -->
           <input type="text" id="license-key-input" placeholder="sub_… or txn_…" spellcheck="false" autocomplete="off">
           <button id="btn-activate-license" class="btn-primary" data-i18n="activateLicense">Activate</button>
         </div>

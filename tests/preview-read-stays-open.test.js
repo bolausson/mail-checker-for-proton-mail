@@ -13,6 +13,10 @@
  * trash, move, spam, phishing, snooze, delete, or a poll that no longer
  * lists it because it was read or moved elsewhere) still closes it.
  *
+ * The read button's icon flips with its title on each of these paths: an
+ * open envelope while it offers "Mark as read", a closed one for "Mark as
+ * unread" (tests/read-toggle-icon.test.js covers the button itself).
+ *
  * House style: popup.js is a DOM-bound IIFE, so the functions under test are
  * lifted out of the source by name and evaluated together, with the module
  * state they assign declared as real variables (see popup()).
@@ -92,15 +96,25 @@ const ProtonI18n = { t: (k) => k };
 const REMOVE_ACTIONS = constant('REMOVE_ACTIONS');
 const CONV_REMOVE_ACTIONS = constant('CONV_REMOVE_ACTIONS');
 const ACTION_LABELS = constant('ACTION_LABELS');
+const ICONS = constant('ICONS');
 const flush = () => new Promise((r) => setTimeout(r, 0));
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const click = { stopPropagation() {} };
+
+/** 'open' or 'closed' for the two read-toggle envelopes, else what it holds. */
+function iconOf(btn) {
+  const d = (svg) => svg.match(/ d="([^"]+)"/)[1];
+  const paths = btn.querySelectorAll('svg path');
+  if (paths.length !== 1) return paths.length + ' paths';
+  const got = paths[0].getAttribute('d');
+  return got === d(ICONS.markRead) ? 'open' : got === d(ICONS.markUnread) ? 'closed' : 'another icon';
+}
 
 const NAMES = [
   '_applyOptimisticUpdate', '_rollbackOptimistic', '_reconcile', 'doAction',
   '_listNeighbours', '_getNextMsgForAdvance', '_getNavList', '_navigateMsg', '_updateNavButtons',
   'handleMarkRead', 'handleMarkUnread', '_syncPreviewReadButton', '_syncPreviewWithList',
-  'closePreview', 'handleArchive',
+  'closePreview', 'handleArchive', '_setHTML',
 ];
 
 function message(id, time) {
@@ -117,6 +131,8 @@ function popup({ openId = 'm2', reply = () => ({ ok: true }), settings = {} } = 
   readButton.className = 'action-read';
   readButton.dataset.unread = '1';
   readButton.title = 'markAsRead';
+  // As _renderPreviewActions draws it for an unread message.
+  readButton.replaceChildren(...new DOMParser().parseFromString(ICONS.markRead, 'text/html').body.childNodes);
   previewActionsEl.appendChild(readButton);
   const btnPrevMsg = document.createElement('button');
   const btnNextMsg = document.createElement('button');
@@ -125,7 +141,7 @@ function popup({ openId = 'm2', reply = () => ({ ok: true }), settings = {} } = 
   const opened = [];
   const box = {};
   const env = {
-    document, ProtonI18n, REMOVE_ACTIONS, CONV_REMOVE_ACTIONS, ACTION_LABELS,
+    document, ProtonI18n, REMOVE_ACTIONS, CONV_REMOVE_ACTIONS, ACTION_LABELS, ICONS,
     OPTIMISTIC_TIMEOUT_MS: 10000,
     browser: { runtime: { sendMessage: async (msg) => { sent.push(msg); return reply(msg); } } },
     btnRefresh: null, btnPrevMsg, btnNextMsg, previewActionsEl, previewPanel, previewBody,
@@ -156,6 +172,7 @@ function popup({ openId = 'm2', reply = () => ({ ok: true }), settings = {} } = 
   Object.assign(box, sandbox(NAMES, env, state));
   return {
     ...box, sent, toasts, opened, readButton, btnPrevMsg, btnNextMsg, previewPanel,
+    icon: () => iconOf(readButton),
     open: () => box.get()._selectedMsg && box.get()._selectedMsg.ID,
     listed: () => box.get()._savedState.messages.map((m) => m.ID),
     types: () => sent.map((m) => m.type),
@@ -185,6 +202,7 @@ describe('marking the open message read', () => {
     await flush();
     expect(p.readButton.title).toBe('markAsUnread');
     expect(p.readButton.dataset.unread).toBe('0');
+    expect(p.icon()).toBe('closed');
     expect(p.toasts.map((t) => t.text)).toEqual(['markedAsRead']);
   });
 
@@ -196,6 +214,7 @@ describe('marking the open message read', () => {
     await flush();
     expect(p.open()).toBe('m2');
     expect(p.readButton.title).toBe('markAsUnread');
+    expect(p.icon()).toBe('closed');
   });
 
   it('stays open through the polls that no longer list it', async () => {
@@ -214,6 +233,7 @@ describe('marking the open message read', () => {
     await flush();
     expect(p.open()).toBe('m1');
     expect(p.readButton.title).toBe('markAsRead');
+    expect(p.icon()).toBe('open');
   });
 });
 
@@ -226,11 +246,13 @@ describe('Mark as unread and Undo on the read open message', () => {
     await flush();
     expect(p.types()).toEqual(['MARK_READ', 'MARK_UNREAD']);
     expect(p.readButton.title).toBe('markAsRead');
+    expect(p.icon()).toBe('open');
     expect(p.open()).toBe('m2');
     p.poll(['m1', 'm2', 'm3']);
     await flush();
     expect(p.open()).toBe('m2');
     expect(p.get()._readWhileOpenId).toBe(null);
+    expect(p.icon()).toBe('open');
   });
 
   it('Undo of "Marked as read" marks it unread and keeps it open', async () => {
@@ -242,6 +264,7 @@ describe('Mark as unread and Undo on the read open message', () => {
     expect(p.types()).toEqual(['MARK_READ', 'MARK_UNREAD']);
     expect(p.sent[1].ids).toEqual(['m2']);
     expect(p.readButton.title).toBe('markAsRead');
+    expect(p.icon()).toBe('open');
     expect(p.open()).toBe('m2');
     p.poll(['m1', 'm2', 'm3']);
     await flush();
@@ -258,6 +281,7 @@ describe('Mark as unread and Undo on the read open message', () => {
     expect(p.open()).toBe('m2');
     expect(p.readButton.title).toBe('markAsRead');
     expect(p.readButton.dataset.unread).toBe('1');
+    expect(p.icon()).toBe('open');
     expect(p.get()._selectedMsg.Unread).toBe(1);
   });
 
@@ -281,6 +305,7 @@ describe('a read change that fails', () => {
     await flush();
     expect(p.listed()).toEqual(['m1', 'm2', 'm3']);
     expect(p.readButton.title).toBe('markAsRead');
+    expect(p.icon()).toBe('open');
     expect(p.open()).toBe('m2');
     expect(p.get()._readWhileOpenId).toBe(null);
   });
@@ -294,6 +319,7 @@ describe('a read change that fails', () => {
     expect(p.get()._savedState.messages.find((m) => m.ID === 'm2').Unread).toBe(1);
     expect(p.get()._savedState.unreadCount).toBe(3);
     expect(p.readButton.title).toBe('markAsRead');
+    expect(p.icon()).toBe('open');
   });
 
   it('a failed Mark as read right after Mark as unread puts it back unread too', async () => {
@@ -309,6 +335,7 @@ describe('a read change that fails', () => {
     p.handleMarkRead(click, 'm2', 'acc1');
     await flush();
     expect(p.readButton.title).toBe('markAsRead');
+    expect(p.icon()).toBe('open');
     expect(p.get()._selectedMsg.Unread).toBe(1);
     expect(p.listed()).toEqual(['m1', 'm2', 'm3']);
     expect(p.open()).toBe('m2');
@@ -325,6 +352,7 @@ describe('a read change that fails', () => {
     p.doAction('MARK_READ', ['m2'], 'acc1');
     await flush();
     expect(p.readButton.title).toBe('markAsUnread');
+    expect(p.icon()).toBe('closed');
     expect(p.listed()).toEqual(['m1', 'm3']);
     expect(p.open()).toBe('m2');
   });
@@ -336,6 +364,7 @@ describe('a read change that fails', () => {
     p.handleMarkUnread(click, 'm2', 'acc1');
     await flush();
     expect(p.readButton.title).toBe('markAsUnread');
+    expect(p.icon()).toBe('closed');
     expect(p.get()._selectedMsg.Unread).toBe(0);
     expect(p.open()).toBe('m2');
   });

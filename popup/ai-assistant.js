@@ -14,7 +14,7 @@
  */
 
 const PopupScribe = (() => {
-  let _deps = null; // { sendMessage, showToast, t, isPremium, setHTML }
+  let _deps = null; // { sendMessage, connect, showToast, t, isPremium, setHTML }
   let _deviceNoteShown = false;
 
   // action key → { i18n label key, inline SVG icon }
@@ -57,8 +57,12 @@ const PopupScribe = (() => {
   let _reposition = null;
   let _outsideHandler = null;
   let _anchorBtn = null;
+  let _openRun = null;    // the request the open result panel waits for
 
   function closeOpen() {
+    // Every way out of the panel comes through here, so a request still
+    // running for it is cancelled here.
+    if (_openRun) { const run = _openRun; _openRun = null; run.close(); }
     if (_reposition) {
       window.removeEventListener('resize', _reposition);
       window.removeEventListener('scroll', _reposition, true);
@@ -152,6 +156,41 @@ const PopupScribe = (() => {
     setTimeout(() => topic.focus(), 0);
   }
 
+  // ── Cancelling a running request ──
+  // While a panel waits for its answer it holds a port named after the
+  // request's token. Closing the port, here or by the browser when the popup
+  // or popout goes away, makes the background abort that request. The PING
+  // keeps Firefox's event page awake through a long generation, as the Drive
+  // picker's does. Without a port (no connect dep, or Chrome refusing after
+  // an extension update) the request simply runs to its end.
+  const RUN_PORT = 'mcpm-ai-run:';
+  const RUN_PING_MS = 20 * 1000;
+
+  function _startRun(token) {
+    let port = null;
+    try { port = _deps.connect ? _deps.connect({ name: RUN_PORT + token }) : null; } catch (_) { port = null; }
+    let closed = !port;
+    let pingTimer = null;
+    const stop = () => { closed = true; clearInterval(pingTimer); };
+    if (port) {
+      port.onDisconnect.addListener(() => {
+        // Read it, or Chrome reports a disconnect with an error as unchecked.
+        if (typeof browser !== 'undefined') void browser.runtime.lastError;
+        stop();
+      });
+      pingTimer = setInterval(() => {
+        try { port.postMessage({ type: 'PING' }); } catch (_) { stop(); }
+      }, RUN_PING_MS);
+    }
+    return {
+      close() {
+        if (closed) return;
+        stop();
+        try { port.disconnect(); } catch (_) {}
+      },
+    };
+  }
+
   // ── Run an action and show the result preview panel ──
   async function _runAndPreview(ctx, anchorBtn, actionDef, prompt) {
     const t = _deps.t;
@@ -179,6 +218,11 @@ const PopupScribe = (() => {
       '</div>');
     panel.querySelector('.scribe-x').addEventListener('click', (e) => { e.preventDefault(); closeOpen(); });
     _portal(panel, anchorBtn);
+    // Only after _portal: it closes the previous panel, and so cancels that
+    // panel's request, not this one.
+    const token = crypto.randomUUID();
+    const run = _startRun(token);
+    _openRun = run;
 
     const resultEl = panel.querySelector('.scribe-result');
     const footEl = panel.querySelector('.scribe-foot-actions');
@@ -194,9 +238,14 @@ const PopupScribe = (() => {
         recipient: ctx.recipient || '',
         sender: ctx.sender || '',
         locale: ctx.locale || '',
+        token,
       });
     } catch (e) {
       res = { ok: false, error: 'GENERATION_FAIL' };
+    } finally {
+      // Answered or failed: nothing is left to cancel.
+      run.close();
+      if (_openRun === run) _openRun = null;
     }
     if (_openEl !== panel) return; // user closed/changed while waiting
 
@@ -243,6 +292,7 @@ const PopupScribe = (() => {
       case 'HARMFUL':
       case 'REJECTED': msg = t('scribeHarmful'); break;
       case 'TOO_LONG': msg = t('scribeTooLong'); break;
+      case 'PREMIUM_REQUIRED': msg = t('premiumRequired'); break;
       default: msg = t('scribeFailed');
     }
     _setHtml(resultEl, '<div class="scribe-error">' +
@@ -252,7 +302,7 @@ const PopupScribe = (() => {
 
   // ── Public API ──
 
-  /** One-time global wiring. deps: { sendMessage, showToast, t, isPremium, setHTML } */
+  /** One-time global wiring. deps: { sendMessage, connect, showToast, t, isPremium, setHTML } */
   function init(deps) { _deps = deps; }
 
   /**

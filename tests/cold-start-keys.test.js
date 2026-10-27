@@ -17,6 +17,7 @@
  *     under the attachment's real filename.
  *
  * Nothing in tests/ covered any of them, which is why all three shipped.
+ * A fourth, getCalendarAttendees, was found later; its block is at the end.
  *
  * The fake unlock below resolves on a real await tick and flips keysUnlocked
  * only when it resolves, so a handler that reads the flag before awaiting
@@ -177,6 +178,27 @@ function buildFetchAttachment(world, src = BACKGROUND) {
   });
 }
 
+function buildGetCalendarAttendees(world, src = ACCOUNTS) {
+  const body = lift(src, 'getCalendarAttendees') + '\nreturn getCalendarAttendees;';
+  const factory = new Function('getCalendarEventByUID', '_pickEventForScope', 'getCalendarEvent',
+    '_decryptAttendeeEmails', 'ensureKeysUnlocked', 'ProtonDiag', 'debugLog', body);
+  return factory(
+    async () => [{ ID: 'ev1', CalendarID: 'cal1', RecurrenceID: null }],
+    events => events[0],
+    async () => ({ Attendees: [{ Token: 'tok-me', Status: 3 }, { Token: 'tok-co', Status: 0 }] }),
+    // Mirrors the real helper, which answers {} while the keys are locked, so
+    // the test cannot pass by accident further down the chain.
+    async (accountId) => {
+      const account = world.getAccount(accountId);
+      if (!account || !account.keysUnlocked || account.decryptedKeys.length === 0) return {};
+      return { 'tok-me': 'alex@example.com', 'tok-co': 'co.invitee@example.net' };
+    },
+    world.ensureKeysUnlocked,
+    { record() {} },
+    () => {},
+  );
+}
+
 const rsvpArgs = ['acc1', 'organizer@example.com', 'Accepted: Lunch', '<p>Yes</p>',
   'BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n', 'alex@example.com'];
 
@@ -282,5 +304,35 @@ describe('_fetchAndDecryptAttachment on a worker that just woke', () => {
     expect(world.log).not.toContain('unlock:start');
     expect(result.decrypted).toBe(false);
     expect(bytes(result.bytes)).toEqual(bytes(CIPHERTEXT));
+  });
+});
+
+// Found in the 2026-10 re-check: the invite card's attendee lookup read the
+// keys without waiting. The popup's earlier GET_MESSAGE always unlocked them
+// first, so it never showed, but only because of call order.
+describe('getCalendarAttendees on a worker that just woke', () => {
+  it('waits for the in-flight unlock instead of blanking every email', async () => {
+    const world = makeWorld();
+    const getCalendarAttendees = buildGetCalendarAttendees(world);
+
+    const result = await getCalendarAttendees('acc1', 'uid-1', '');
+
+    expect(result.attendees.map(a => a.Email))
+      .toEqual(['alex@example.com', 'co.invitee@example.net']);
+    expect(world.log).not.toContain('getAccount:keysUnlocked=false');
+    expect(world.log.indexOf('unlock:done'))
+      .toBeLessThan(world.log.indexOf('getAccount:keysUnlocked=true'));
+  });
+
+  it('still answers, with blank emails, when the unlock genuinely cannot succeed', async () => {
+    const world = makeWorld({ canUnlock: false });
+    const getCalendarAttendees = buildGetCalendarAttendees(world);
+
+    const result = await getCalendarAttendees('acc1', 'uid-1', '');
+
+    // The card still shows the attendees and their ICS status; only the
+    // email matching is lost, as before the fix.
+    expect(result.attendees.map(a => a.Email)).toEqual(['', '']);
+    expect(world.log).toContain('unlock:failed');
   });
 });

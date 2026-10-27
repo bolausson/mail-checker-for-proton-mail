@@ -403,6 +403,69 @@
     });
   }
 
+  // AI writing assistant runs that can be cancelled. AI_RUN_ACTION is still
+  // the only way to start one; it carries a random token, and while the
+  // popup waits for the answer it holds a port named AI_RUN_PORT + token. The
+  // popup closes that port when the result panel goes away, and the browser
+  // closes it with the popup or popout window (closed, reloaded, crashed), so
+  // a disconnect aborts the run instead of letting Proton write an answer
+  // nobody will see.
+  //
+  // The port is handled at once while the message may wait for init, so
+  // either can come first: both get-or-create the entry. A port closed before
+  // its message arrives leaves an aborted entry for that message to find. The
+  // newest AI_RUN_MAX_CANCELLED of those are kept, without a timer, so a
+  // message parked behind a slow init still finds its cancel.
+  const AI_RUN_PORT = 'mcpm-ai-run:';
+  const AI_RUN_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  const AI_RUN_MAX_CANCELLED = 32;
+  const _aiRuns = new Map(); // token -> { controller, running }
+
+  function _aiRunFor(token) {
+    let run = _aiRuns.get(token);
+    if (!run) {
+      run = { controller: new AbortController(), running: false };
+      _aiRuns.set(token, run);
+    }
+    return run;
+  }
+
+  function _cancelAiRun(token) {
+    const run = _aiRuns.get(token);
+    // The usual case: the run answered and removed its entry, and the popup
+    // closed the port after reading the answer.
+    if (!run) return;
+    run.controller.abort();
+    if (run.running) return; // its AI_RUN_ACTION removes it when it settles
+    const cancelled = [];
+    for (const [key, entry] of _aiRuns) {
+      if (!entry.running && entry.controller.signal.aborted) cancelled.push(key);
+    }
+    while (cancelled.length > AI_RUN_MAX_CANCELLED) _aiRuns.delete(cancelled.shift());
+  }
+
+  // The port only ever aborts, it grants nothing, so it needs neither init
+  // nor the premium gate. Only the popup page (the toolbar popup and the
+  // standalone popout are both popup/popup.html) hosts the assistant, so a
+  // port from anywhere else, our proton.me content scripts included, is
+  // refused.
+  function _handleAiRunPort(port) {
+    const token = port.name.slice(AI_RUN_PORT.length);
+    const sender = port.sender || {};
+    const page = String(sender.url || '').split(/[?#]/)[0];
+    if (!AI_RUN_TOKEN.test(token) || sender.id !== browser.runtime.id ||
+        page !== browser.runtime.getURL('popup/popup.html')) {
+      port.disconnect();
+      return;
+    }
+    _aiRunFor(token);
+    // Firefox counts a port message as activity only when a listener is
+    // registered for it, so the popup's PINGs keep the event page awake
+    // through a long generation.
+    port.onMessage.addListener(() => {});
+    port.onDisconnect.addListener(() => _cancelAiRun(token));
+  }
+
   // Message types that are available to free-tier users. Everything not in
   // this set is silently gated: background replies with a PREMIUM_REQUIRED
   // error if ProtonPremium.isPremium() is false. This is the single
@@ -1290,6 +1353,12 @@
 
       case 'AI_RUN_ACTION':
         if (message.accountId && message.action) {
+          // With a token, the popup's port of that name can abort the run
+          // (see _handleAiRunPort). Without one the run goes to its end.
+          const token = typeof message.token === 'string' && AI_RUN_TOKEN.test(message.token)
+            ? message.token : null;
+          const run = token ? _aiRunFor(token) : null;
+          if (run) run.running = true;
           ProtonAIAssistant.runAction({
             accountId: message.accountId,
             action: message.action,
@@ -1298,9 +1367,11 @@
             recipient: message.recipient || '',
             sender: message.sender || '',
             locale: message.locale || '',
+            signal: run ? run.controller.signal : undefined,
           })
             .then(result => sendResponse(result))
-            .catch(err => sendResponse({ ok: false, error: 'GENERATION_FAIL', message: err && err.message }));
+            .catch(err => sendResponse({ ok: false, error: 'GENERATION_FAIL', message: err && err.message }))
+            .finally(() => { if (_aiRuns.get(token) === run) _aiRuns.delete(token); });
           return true;
         }
         sendResponse({ ok: false, error: 'GENERATION_FAIL' });
@@ -1606,7 +1677,10 @@
   // background over a long-lived port (which also keeps the Chrome MV3
   // service worker alive for the duration). Ports bypass the FREE_ALLOWED
   // gate above, so ProtonDrive.handlePort re-checks premium itself.
+  // The AI assistant's cancel ports are routed first (see _handleAiRunPort);
+  // they need their listeners just as synchronously.
   browser.runtime.onConnect.addListener((port) => {
+    if (port.name.startsWith(AI_RUN_PORT)) { _handleAiRunPort(port); return; }
     if (port.name !== 'mcpm-drive-upload') return;
     // Attach the port listeners SYNCHRONOUSLY: the picker posts HELLO right
     // after connecting, and port messages are NOT buffered for a listener

@@ -104,6 +104,22 @@ describe('the other license messages always answer', () => {
     expect(await answered).toEqual(urls);
   });
 
+  it('SET_LICENSE_KEY passes the text on, and a refusal back with its kind', async () => {
+    // The options page names the problem by the kind premium.js read (here a
+    // text too long to search), so it must come back as it was given.
+    const keys = [];
+    let restarted = 0;
+    const refusal = { error: 'invalid_format', kind: 'too_long' };
+    const text = 'x'.repeat(5001);
+    const { answered } = runCase('SET_LICENSE_KEY', {
+      ProtonPremium: { setLicenseKey: async (key) => { keys.push(key); return refusal; } },
+      ProtonPoller: { restart: async () => { restarted++; } },
+    }, { key: text });
+    expect(await answered).toEqual(refusal);
+    expect(keys).toEqual([text]);
+    expect(restarted).toBe(0);
+  });
+
   it('START_TRIAL passes a refusal through', async () => {
     const { answered } = runCase('START_TRIAL', {
       ProtonPremium: { startTrial: async () => ({ error: 'trial_unavailable' }) },
