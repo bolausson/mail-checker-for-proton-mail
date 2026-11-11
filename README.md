@@ -55,12 +55,18 @@ compares the two.
 
 - Unlimited accounts, each with its own label, color, notifications and folders, checked
   as often as every 30 seconds
-- HTML view (remote content stays blocked until you allow it), attachments and a pop-out
-  window
+- HTML view (remote content stays blocked until you allow it), attachments, a pop-out
+  window, and the recipients' email addresses in the open message
 - Reply, reply all and forward in the popup, and compose in the popup or in Proton Mail:
   rich-text editor, contact autocomplete, encrypted drafts, scheduled send and expiring
   messages
-- Calendar invitations with RSVP, and adding `.ics` bookings to Proton Calendar
+- Send, reply and forward from any +alias of your Proton addresses
+  (`name+shop@yourdomain`), even one that has never received mail, and choose which of
+  your addresses a new mail comes from
+- Calendar invitations answered with Yes, Maybe or No right in the message: the card says
+  how a recurring event repeats, you can change your answer on the spot, and answering
+  adds the event to your Proton calendar; `.ics` bookings can be added to Proton Calendar
+  too
 - File sharing through Proton Drive links instead of attachments
 - AI writing assistant (Proton Scribe)
 - Quick and bulk actions (archive, move, label, star, snooze, spam and more), quiet mail
