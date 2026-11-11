@@ -1307,7 +1307,12 @@
                 message.icsData, message.senderAddress || '',
                 { eventUID: message.eventUID, attendeeToken: message.attendeeToken,
                   attendeeEmail: message.attendeeEmail || '',
-                  partstat: message.partstat, recurrenceId: message.recurrenceId || '' });
+                  partstat: message.partstat, recurrenceId: message.recurrenceId || '',
+                  // The invitation itself: answering one that is not in the
+                  // calendar adds it there, as Proton's Mail app does.
+                  inviteIcs: typeof message.inviteIcs === 'string' ? message.inviteIcs : '',
+                  promisedAdd: message.promisedAdd === true,
+                  shownLocation: typeof message.shownLocation === 'string' ? message.shownLocation : '' });
               sendResponse(result);
             } catch (err) {
               console.error('[ProtonMailChecker] RSVP send failed:', err.message);
@@ -1317,6 +1322,23 @@
           return true;
         }
         sendResponse({ error: 'Missing required fields' });
+        return false;
+
+      case 'CHECK_INVITE_SAVABLE':
+        // Premium-only (not in FREE_ALLOWED), like every calendar message.
+        // Whether answering this invitation could save the user's copy: the
+        // card says "your answer adds it" only then.
+        if (message.accountId && message.eventUID && typeof message.inviteIcs === 'string') {
+          ProtonAccounts.canSaveInvitation(message.accountId, {
+            eventUID: message.eventUID, recurrenceId: message.recurrenceId || '',
+            attendeeEmail: message.attendeeEmail || '', inviteIcs: message.inviteIcs,
+            replyIcs: typeof message.replyIcs === 'string' ? message.replyIcs : '',
+            shownLocation: typeof message.shownLocation === 'string' ? message.shownLocation : '',
+          }).then(savable => sendResponse({ savable }))
+            .catch(() => sendResponse({ savable: false }));
+          return true;
+        }
+        sendResponse({ savable: false });
         return false;
 
       case 'GET_CALENDAR_ATTENDEES':

@@ -244,26 +244,36 @@ describe('ProtonAccounts.request error handling', () => {
     expect(accounts._pickEventForScope([events[1], events[0]], false).ID).toBe('master');
   });
 
-  it('picks the single exception for an occurrence RSVP, never the master', async () => {
+  it('never answers a whole series on one of its exceptions', async () => {
     const accounts = await makeAccounts();
-    const events = [
-      { ID: 'master', RecurrenceID: null },
-      { ID: 'occ1', RecurrenceID: 1781000000 },
-    ];
-    const picked = accounts._pickEventForScope(events, true);
-    expect(picked.ID).toBe('occ1');
-    expect(picked.RecurrenceID).toBeTruthy(); // never the master series
+    // Only an exception in the calendar (e.g. the standalone copy of one
+    // answered occurrence): a series answer must not land on it.
+    expect(accounts._pickEventForScope([{ ID: 'occ1', RecurrenceID: 1781000000 }], false)).toBeNull();
   });
 
-  it('refuses to guess when multiple occurrences exist (avoids series corruption)', async () => {
+  it('picks the exception of exactly that occurrence, never the master', async () => {
     const accounts = await makeAccounts();
     const events = [
       { ID: 'master', RecurrenceID: null },
       { ID: 'occ1', RecurrenceID: 1781000000 },
       { ID: 'occ2', RecurrenceID: 1781086400 },
     ];
-    // Ambiguous → null so the caller skips the local update rather than
-    // writing onto the wrong occurrence or the whole series.
+    // Several exceptions are no longer ambiguous: the time names the one.
+    expect(accounts._pickEventForScope(events, true, 1781086400).ID).toBe('occ2');
+    expect(accounts._pickEventForScope(events, true, 1781000000).ID).toBe('occ1');
+  });
+
+  it('refuses to guess for an occurrence it cannot find (avoids writing onto another one)', async () => {
+    const accounts = await makeAccounts();
+    const events = [
+      { ID: 'master', RecurrenceID: null },
+      { ID: 'occ1', RecurrenceID: 1781000000 },
+    ];
+    // Another occurrence, or a time that could not be worked out: null, so
+    // the caller skips the local update rather than writing onto the wrong
+    // occurrence or the whole series. The lone exception is NOT taken.
+    expect(accounts._pickEventForScope(events, true, 1781172800)).toBeNull();
+    expect(accounts._pickEventForScope(events, true, null)).toBeNull();
     expect(accounts._pickEventForScope(events, true)).toBeNull();
   });
 

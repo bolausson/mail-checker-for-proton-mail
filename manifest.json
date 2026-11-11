@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Mail Checker for Proton Mail",
-  "version": "2.0.3",
+  "version": "2.0.7",
   "description": "Unread count, notifications and reading for one Proton Mail account. Pro adds reply and compose, attachments, RSVP, more accounts.",
 
   "browser_specific_settings": {
@@ -60,6 +60,7 @@
       "lib/monitored-ids.js",
       "lib/pro-settings.js",
       "lib/license-entry.js",
+      "lib/sender-alias.js",
       "lib/openpgp.min.js",
       "lib/bcrypt.min.js",
       "lib/i18n.js",
@@ -69,6 +70,8 @@
       "background/url-detection.js",
       "background/csp-shim.js",
       "background/calendar-ics.js",
+      "background/calendar-tz-data.js",
+      "background/calendar-tz.js",
       "background/calendar-serialize.js",
       "background/optimistic-tombstones.js",
       "background/accounts.js",

@@ -35,6 +35,7 @@ const ROOT = join(__dirname, '..');
 const CALENDAR = readFileSync(join(ROOT, 'popup', 'calendar-utils.js'), 'utf-8');
 const CALENDAR_ICS = readFileSync(join(ROOT, 'background', 'calendar-ics.js'), 'utf-8');
 const I18N = readFileSync(join(ROOT, 'lib', 'i18n.js'), 'utf-8');
+const ProtonSenderAlias = new Function(readFileSync(join(ROOT, 'lib', 'sender-alias.js'), 'utf-8') + '\nreturn ProtonSenderAlias;')();
 
 // The account's own address, as GET_ADDRESSES reports it.
 const ME = 'me@example.com';
@@ -99,8 +100,8 @@ function loadCalendar(replies = {}) {
     },
     tabs: { create() {} },
   };
-  const mod = new Function('browser', 'ProtonI18n', 'window',
-    CALENDAR + '\nreturn PopupCalendar;')(browserShim, I18n, globalThis.window);
+  const mod = new Function('browser', 'ProtonI18n', 'window', 'ProtonSenderAlias',
+    CALENDAR + '\nreturn PopupCalendar;')(browserShim, I18n, globalThis.window, ProtonSenderAlias);
   return { mod, sent };
 }
 
@@ -118,8 +119,8 @@ function mountCard(ics, replies = {}) {
 }
 
 /** Click one RSVP button and return the CALENDAR_RSVP message the card sent. */
-async function rsvp(ics, buttonKey = 'accept') {
-  const { host, sent } = mountCard(ics);
+async function rsvp(ics, buttonKey = 'accept', replies = {}) {
+  const { host, sent } = mountCard(ics, replies);
   const btn = [...host.querySelectorAll('.calendar-invite-buttons .calendar-invite-btn')]
     .find(b => b.textContent === I18n.t(buttonKey));
   btn.click();
@@ -199,6 +200,22 @@ describe('the RSVP mail body never carries markup from the invite', () => {
     expect(msg.attendeeEmail).toBe(invited);
     expect(msg.senderAddress).toBe(ME);
     expectInertBody(msg.htmlBody, I18n.t('hasAccepted', invited, 'Planning'));
+  });
+
+  it('answers an invitation sent to a +alias from that +alias, as Proton Calendar does', async () => {
+    const invited = 'me+club@example.com';
+    const msg = await rsvp(invite({ attendees: ['ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:' + invited] }), 'accept',
+      { GET_ADDRESSES: [{ Email: ME, CanAlias: true }] });
+    expect(msg.attendeeEmail).toBe(invited);
+    expect(msg.senderAddress).toBe(invited);
+  });
+
+  it('answers from the base address when that address cannot carry a +alias', async () => {
+    const invited = 'me+club@example.com';
+    const msg = await rsvp(invite({ attendees: ['ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:' + invited] }), 'accept',
+      { GET_ADDRESSES: [{ Email: ME, CanAlias: false }] });
+    expect(msg.attendeeEmail).toBe(invited);
+    expect(msg.senderAddress).toBe(ME);
   });
 
   it('escapes in a translated sentence too', async () => {

@@ -464,6 +464,13 @@ describe('a burst of requests on an expired session', () => {
     expect(logged('req.401')).toHaveLength(2);
   });
 
+  it('logs the path without its query: a query can hold addresses', async () => {
+    // The canonical-address lookup sends the attendees' addresses in its query.
+    await request('acc1', 'GET', 'core/v4/addresses/canonical?Emails[]=guest%40example.org&Emails[]=other%2Btag%40example.net');
+    expect(logged('req.401')).toEqual([expect.objectContaining({ path: 'core/v4/addresses/canonical' })]);
+    expect(JSON.stringify(world.records)).not.toMatch(/%40|guest|other/);
+  });
+
   it('logs one refresh.fail per failed refresh, however many requests waited on it', async () => {
     world.refreshFails = true;
     const errors = await Promise.all(PATHS.map(p => request('acc1', 'GET', p).then(() => null, e => e)));

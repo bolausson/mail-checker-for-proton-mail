@@ -435,6 +435,8 @@ describe('popup.js wiring', () => {
         _settings: {},
         _setHTML: (target) => { target.textContent = ''; },
         replyText: document.createElement('textarea'),
+        replyPicker: { clear: () => {} },
+        _wantReplyFrom: () => {},
         chipForwardTo: chips,
         chipReplyCc: chips,
         chipReplyBcc: chips,

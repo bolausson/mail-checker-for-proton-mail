@@ -132,6 +132,8 @@ describe('sending from the reader shows the arrow at once, unless the send is sc
       previewReply: document.createElement('div'),
       btnReplySend: document.createElement('button'),
       replyFromSelect: { value: 'me@example.org' },
+      replyPicker: { validate: () => true, value: () => 'me@example.org' },
+      _replyFromWant: '',
       // What the send-options control reports: deliveryTime is null for
       // "send now" and a unix time for a scheduled send.
       replySendOpts: {

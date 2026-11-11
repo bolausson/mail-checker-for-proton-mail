@@ -342,6 +342,8 @@ describe('the open message shows the arrows, and clears them', () => {
       replyCcBccRows: el(),
       replyFromSelect: el(),
       replyFromRow: el(),
+      replyPicker: { clear: noop },
+      _wantReplyFrom: noop,
       _updateNavButtons: noop,
       fetchAndShowBody: async () => {},
       doAction: noop,

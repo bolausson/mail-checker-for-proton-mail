@@ -9,12 +9,15 @@
   <script src="../lib/dialog.js" defer></script>
   <script src="../lib/code-patterns.js" defer></script>
   <script src="../lib/pro-settings.js" defer></script>
+  <script src="../lib/sender-alias.js" defer></script>
   <script src="../lib/binary-utils.js" defer></script>
   <script src="../lib/browser-info.js" defer></script>
   <script src="../lib/email-canvas.js" defer></script>
   <script src="../lib/image-resize.js" defer></script>
   <script src="../lib/editor-history.js" defer></script>
   <script src="color-picker.js" defer></script>
+  <script src="../background/calendar-tz-data.js" defer></script>
+  <script src="../background/calendar-tz.js" defer></script>
   <script src="calendar-utils.js" defer></script>
   <script src="calendar-add.js" defer></script>
   <script src="attachment-utils.js" defer></script>
@@ -254,8 +257,12 @@
       </div>
       <div id="reply-editor" class="reply-editor hidden">
         <div id="reply-from-row" class="reply-from-row">
-          <label data-i18n="fromLabel">From:</label>
+          <label for="reply-from" data-i18n="fromLabel">From:</label>
           <select id="reply-from" class="reply-from-select"></select>
+        </div>
+        <div id="reply-alias-row" class="sender-alias-row hidden">
+          <input type="text" id="reply-alias-input" class="sender-alias-input" spellcheck="false" autocomplete="off" aria-describedby="reply-alias-error">
+          <p id="reply-alias-error" class="sender-alias-error hidden" role="alert"></p>
         </div>
         <div id="forward-to-row" class="forward-to-row hidden">
         <label data-i18n="toLabel">To:</label>
@@ -389,9 +396,17 @@
       <button id="btn-compose-send" class="btn-primary btn-small compose-send-btn" data-i18n="send">Send</button>
     </div>
     <div class="compose-fields">
-      <div class="compose-field-row">
-        <label class="compose-field-label" data-i18n="from">From</label>
+      <div id="compose-from-row" class="compose-field-row">
+        <label class="compose-field-label" for="compose-from" data-i18n="from">From</label>
         <select id="compose-from" class="compose-from-select"></select>
+      </div>
+      <div id="compose-sender-row" class="compose-field-row hidden">
+        <label id="compose-sender-label" class="compose-field-label" for="compose-sender" data-i18n="sendAs">Send as</label>
+        <select id="compose-sender" class="compose-from-select"></select>
+      </div>
+      <div id="compose-alias-row" class="sender-alias-row hidden">
+        <input type="text" id="compose-alias-input" class="sender-alias-input" spellcheck="false" autocomplete="off" aria-describedby="compose-alias-error">
+        <p id="compose-alias-error" class="sender-alias-error hidden" role="alert"></p>
       </div>
       <div class="compose-field-row">
         <label class="compose-field-label" data-i18n="to">To</label>

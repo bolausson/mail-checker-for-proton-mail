@@ -1488,7 +1488,9 @@ const ProtonAccounts = (() => {
         // gets its own line.
         if (!account.authError && !_req401Logged.has(account.id)) {
           _req401Logged.add(account.id);
-          ProtonDiag.record('req.401', { email: account.email, path });
+          // The path without its query, as _recordApiCall logs it: a query
+          // can hold addresses (core/v4/addresses/canonical?Emails[]=...).
+          ProtonDiag.record('req.401', { email: account.email, path: String(path || '').split('?')[0] });
         }
         // Only the refresh itself belongs in this try. With the retried
         // request inside it, an ordinary error from the RETRY (a 422 from a
@@ -2954,7 +2956,11 @@ const ProtonAccounts = (() => {
     const result = await request(accountId, 'GET', 'core/v4/addresses');
     return (result.Addresses || [])
       .filter(a => a.Status !== 0 && a.Send !== 0)
-      .map(a => ({ ID: a.ID, Email: a.Email, DisplayName: a.DisplayName || '', Order: a.Order }));
+      .map(a => ({
+        ID: a.ID, Email: a.Email, DisplayName: a.DisplayName || '', Order: a.Order,
+        // Whether the popup may offer a +alias of it (ProtonSenderAlias.canCarry).
+        CanAlias: ProtonSenderAlias.canCarry(a),
+      }));
   }
 
   /** Look up the API-level Address ID for an email on this account.
@@ -3039,25 +3045,12 @@ const ProtonAccounts = (() => {
 
   /**
    * Detect if the original message was sent to a + alias of one of our addresses.
-   * Returns { Email, DisplayName } with the + alias, or null if none found.
+   * Returns { Email, DisplayName, ID } with the + alias and its base address's
+   * name and ID, or null if none found (ProtonSenderAlias.detect).
    */
   function _detectPlusAlias(originalMsg, addresses) {
-    const recipients = [...(originalMsg.ToList || []), ...(originalMsg.CCList || [])];
-    for (const r of recipients) {
-      const addr = r.Address.toLowerCase();
-      if (!addr.includes('+')) continue;
-      const [localWithPlus, domain] = addr.split('@');
-      const basePart = localWithPlus.split('+')[0];
-      // Check if base matches one of our addresses
-      for (const myAddr of addresses) {
-        const [myLocal, myDomain] = myAddr.Email.toLowerCase().split('@');
-        if (myLocal === basePart && myDomain === domain) {
-          // Return the + alias address with base address ID and display name
-          return { Email: r.Address, DisplayName: myAddr.DisplayName || '', ID: myAddr.ID };
-        }
-      }
-    }
-    return null;
+    const found = ProtonSenderAlias.detect(originalMsg, addresses);
+    return found ? { Email: found.email, DisplayName: found.base.DisplayName || '', ID: found.base.ID } : null;
   }
 
   /**
@@ -3079,18 +3072,15 @@ const ProtonAccounts = (() => {
     // Resolve which address to send from
     let fromAddr;
     if (senderAddress) {
-      let match = addresses.find(a => a.Email.toLowerCase() === senderAddress.toLowerCase());
-      if (!match && senderAddress.includes('+')) {
-        const [localWithPlus, domain] = senderAddress.toLowerCase().split('@');
-        const baseEmail = localWithPlus.split('+')[0] + '@' + domain;
-        const baseAddr = addresses.find(a => a.Email.toLowerCase() === baseEmail);
-        // Send AS the +alias: keep the alias as the From/Sender address, but sign
-        // with (and use the AddressID of) the underlying base address. This is
-        // what Proton's web client does: the recipient then sees the +alias in
-        // the From header and envelope, not the bare base address.
-        if (baseAddr) match = { ...baseAddr, Email: senderAddress };
-      }
-      fromAddr = match || { Email: senderAddress, DisplayName: defaultAddr.DisplayName || '', ID: defaultAddr.ID };
+      // One of the account's addresses, or a +alias of one. Send AS the
+      // +alias: keep the alias as the From/Sender address, but sign with (and
+      // use the AddressID of) the underlying base address. This is what
+      // Proton's web client does: the recipient then sees the +alias in the
+      // From header, not the bare base address. Anything else is refused
+      // rather than sent from the default address the user did not choose.
+      const chosen = ProtonSenderAlias.resolve(senderAddress, addresses);
+      if (!chosen.ok) throw new Error('SENDER_NOT_OWNED');
+      fromAddr = chosen.alias ? { ...chosen.base, Email: chosen.email } : chosen.base;
     } else if (originalMsg) {
       fromAddr = _detectPlusAlias(originalMsg, addresses) || defaultAddr;
     } else {
@@ -3133,7 +3123,9 @@ const ProtonAccounts = (() => {
     // could disagree while looking like they agreed. Compare fingerprints.
     let keyMatchesAddr = '?';
     try {
-      const a = addresses.find(x => (x.Email || '').toLowerCase() === senderEmail);
+      // A +alias publishes no keys of its own: it is signed with its base's.
+      const alias = ProtonSenderAlias.parse(senderEmail, addresses);
+      const a = addresses.find(x => (x.Email || '').toLowerCase() === senderEmail) || (alias && alias.base);
       const keys = (a && a.Keys) || [];
       addrKeys = keys
         .map(k => (k.ID || '?').slice(0, 8) + (k.Primary === 1 ? '*' : '') + (k.Active === 1 ? '' : '!'))
@@ -3155,7 +3147,7 @@ const ProtonAccounts = (() => {
       keyId: keyId.slice(0, 16),
       addrKeys,
       keyMatchesAddr,
-      from: fromAddr.Email || String(fromAddr),
+      from: ProtonSenderAlias.forLog(fromAddr.Email || String(fromAddr)),
       keySrc: keySource,
       addrs: addresses.length,
       addrIdx: addresses.findIndex(a => a.ID === fromAddr.ID),
@@ -4083,8 +4075,10 @@ const ProtonAccounts = (() => {
       htmlBody = '<div>' + _escapeHtml(body) + '</div>';
     }
 
+    // The address chosen in Compose, which may be a +alias of one (Pro), or
+    // the account's default address.
     const { fromAddr, senderPrivKey, senderPubKey } =
-      await _resolveSenderInfo(accountId, account);
+      await _resolveSenderInfo(accountId, account, params.senderAddress || '');
 
     const allRecipients = [...toList, ...ccList, ...bccList];
 
@@ -4095,6 +4089,8 @@ const ProtonAccounts = (() => {
         BCCList: bccList,
         Subject: subject || '',
         MIMEType: 'text/html',
+        // As for replies: the address (a +alias's base) it is sent from.
+        AddressID: fromAddr.ID,
         Sender: {
           Address: fromAddr.Email,
           Name: fromAddr.DisplayName || '',
@@ -4113,7 +4109,13 @@ const ProtonAccounts = (() => {
     return { success: true };
   }
 
-  /** Send a calendar RSVP reply email with ICS attachment to the organizer. */
+  /** Send a calendar RSVP reply email with ICS attachment to the organizer,
+   *  and record the answer in the user's calendar. With opts (the popup's
+   *  CALENDAR_RSVP), the result's `calendar` says what happened there:
+   *  'updated', 'added' (the invitation was not in the calendar and now is),
+   *  or 'notAdded' (it was not, and could not be added); left out when the
+   *  calendar was not touched (one occurrence that could not be isolated, a
+   *  refused status update: both only logged, as before). */
   async function sendCalendarRsvp(accountId, organizerEmail, subject, htmlBody, icsData, senderAddress, opts) {
     // The worker is torn down after ~30 s idle and comes back with _initDone
     // already true while initSlow() is still unlocking. Clicking Yes on an
@@ -4129,59 +4131,190 @@ const ProtonAccounts = (() => {
       await _resolveSenderInfo(accountId, account, senderAddress);
 
     const toList = [{ Address: organizerEmail, Name: '' }];
-    const icsAttachment = {
-      name: 'invite.ics',
-      type: 'text/calendar; method=REPLY',
-      // btoa() is code-point based: it throws above U+00FF and silently emits
-      // Latin-1 bytes for U+0080..U+00FF. SUMMARY and the organizer's name come
-      // verbatim from the invite, so an emoji in a title threw before any
-      // network call and an umlaut produced mojibake in the organizer's
-      // calendar. Encode the UTF-8 bytes instead.
-      data: ProtonBinary.uint8ToBase64(new TextEncoder().encode(icsData)),
+    const sendReply = async (replyIcs) => {
+      const icsAttachment = {
+        name: 'invite.ics',
+        type: 'text/calendar; method=REPLY',
+        // btoa() is code-point based: it throws above U+00FF and silently emits
+        // Latin-1 bytes for U+0080..U+00FF. SUMMARY and the organizer's name come
+        // verbatim from the invite, so an emoji in a title threw before any
+        // network call and an umlaut produced mojibake in the organizer's
+        // calendar. Encode the UTF-8 bytes instead.
+        data: ProtonBinary.uint8ToBase64(new TextEncoder().encode(replyIcs)),
+      };
+      await _encryptAndSend(accountId, account, {
+        Message: {
+          ToList: toList,
+          CCList: [],
+          BCCList: [],
+          Subject: subject,
+          MIMEType: 'text/html',
+          AddressID: fromAddr.ID || defaultAddr.ID,
+          Sender: {
+            Address: fromAddr.Email || fromAddr,
+            Name: (fromAddr.DisplayName || defaultAddr.DisplayName) || '',
+          },
+        },
+      }, toList, htmlBody, senderPrivKey, senderPubKey, [icsAttachment]);
+      debugLog('[ProtonAccounts] Calendar RSVP sent to', organizerEmail);
     };
 
-    await _encryptAndSend(accountId, account, {
-      Message: {
-        ToList: toList,
-        CCList: [],
-        BCCList: [],
-        Subject: subject,
-        MIMEType: 'text/html',
-        AddressID: fromAddr.ID || defaultAddr.ID,
-        Sender: {
-          Address: fromAddr.Email || fromAddr,
-          Name: (fromAddr.DisplayName || defaultAddr.DisplayName) || '',
-        },
-      },
-    }, toList, htmlBody, senderPrivKey, senderPubKey, [icsAttachment]);
-
-    debugLog('[ProtonAccounts] Calendar RSVP sent to', organizerEmail);
-
-    // Also update the calendar event status if possible
-    if (opts && opts.eventUID && opts.partstat) {
-      try {
-        await _updateCalendarAttendeeStatus(
-          accountId, opts.eventUID, opts.attendeeToken || '',
-          // Match the calendar attendee by the ACTUAL invited address (the ICS
-          // ATTENDEE, e.g. a +alias mail+shop@), NOT the SMTP send-from, which
-          // is the base address (mail@) and would miss the +alias attendee
-          // (token candidates / email both fail). Fall back to senderAddress
-          // only if the popup didn't supply the attendee email.
-          opts.partstat, opts.attendeeEmail || senderAddress || '', opts.recurrenceId || '');
-      } catch (calErr) {
-        console.warn('[ProtonAccounts] Calendar update failed (email was sent):', calErr.message);
-      }
+    if (!(opts && opts.eventUID && opts.partstat)) {
+      await sendReply(icsData);
+      return { success: true };
     }
 
-    return { success: true };
+    // Match the calendar attendee by the ACTUAL invited address (the ICS
+    // ATTENDEE, e.g. a +alias mail+shop@), NOT the SMTP send-from, which is
+    // the base address (mail@) and would miss the +alias attendee (token
+    // candidates / email both fail). Fall back to senderAddress only if the
+    // popup didn't supply the attendee email.
+    const answer = { ...opts, attendeeEmail: opts.attendeeEmail || senderAddress || '' };
+    const status = (updateTime) => _updateCalendarAttendeeStatus(accountId, opts.eventUID, opts.attendeeToken || '',
+      opts.partstat, answer.attendeeEmail, opts.recurrenceId || '', updateTime).catch(() => 'error');
+    let calendar;
+    await _oneInviteAtATime(accountId + '|' + opts.eventUID, async () => {
+      let inv;
+      try { inv = _invitationToSave(answer); } catch (e) { inv = { reason: 'error' }; }
+      // Save only what the user saw and answered: the reply the card built
+      // must describe this very event (see _matchesReply).
+      if (inv.event && !_matchesReply(inv.parsed, icsData, opts.shownLocation)) inv = { reason: 'mismatch' };
+      const pmKeys = inv.event ? _protonInvitationKeys(inv.event) : null;
+      let replyIcs = icsData;
+      let answered = false; // the calendar has this answer before the mail goes
+      if (pmKeys) {
+        // Decided for this answer's scope, as after the reply: another
+        // occurrence's copy is no copy of this one.
+        const existing = await getCalendarEventByUID(accountId, opts.eventUID, { ownOnly: true }).catch(() => null);
+        const scope = existing ? _scopeMatch(existing, opts.recurrenceId || '') : null;
+        if (scope && scope.notFound) {
+          // From Proton Calendar and not in the calendar: link it first, as
+          // Proton does; the server then has the answer before the mail goes.
+          answer.preferCalendarId = existing[0] && existing[0].CalendarID;
+          const updateTime = await _linkProtonInvitation(accountId, answer, inv, pmKeys);
+          if (updateTime) {
+            replyIcs = _asProtonReply(icsData, updateTime);
+            calendar = 'added';
+            answered = true;
+          } else {
+            calendar = 'notAdded';
+          }
+        } else if (scope && scope.ev && pmKeys.sessionKey && scope.ev.SharedEventID === pmKeys.sharedEventId) {
+          // In the calendar and linked to the organizer's event: as Proton
+          // does, answer through the server first and mark the reply with the
+          // same time, so the organizer's card does not call it outdated.
+          const updateTime = Math.floor(Date.now() / 1000);
+          if (await status(updateTime) === 'updated') {
+            replyIcs = _asProtonReply(icsData, updateTime);
+            calendar = 'updated';
+            answered = true;
+          }
+        }
+      }
+
+      await sendReply(replyIcs);
+      if (answered) return;
+
+      // The reply went out: nothing below may turn this into a failure.
+      try {
+        let now = await status();
+        if (now === 'error') {
+          // One more look after a moment: a lookup that failed must not
+          // decide between "save" and "leave alone".
+          await new Promise((r) => setTimeout(r, 1500));
+          now = await status();
+        }
+        if (now === 'updated') {
+          calendar = 'updated';
+        } else if (now === 'notFound') {
+          // Copies of other parts of this UID (other occurrences) are in the
+          // calendar this one belongs in.
+          const mine = inv.event ? await getCalendarEventByUID(accountId, opts.eventUID, { ownOnly: true }).catch(() => []) : [];
+          answer.preferCalendarId = mine[0] && mine[0].CalendarID;
+          ProtonDiag.record('rsvp.import', { uid: _diagUid(opts.eventUID), kind: 'check',
+            savable: inv.event ? (pmKeys ? 'linked' : 'yes') : inv.reason });
+          if (!inv.event) {
+            calendar = 'notAdded';
+          } else if (pmKeys) {
+            // A Proton Calendar invitation is only ever linked, never saved
+            // as a copy of its own. Linking before the reply failed, or the
+            // lookup then failed: one more try now that the reply is out.
+            calendar = (await _linkProtonInvitation(accountId, answer, inv, pmKeys)) ? 'added' : 'notAdded';
+          } else {
+            calendar = await _saveInvitationCopy(accountId, answer, inv);
+          }
+        } else if (now === 'error') {
+          // The calendar cannot be read: never save then (a copy may be there
+          // already), but where the card promised the add, say it did not happen.
+          if (opts.promisedAdd) calendar = 'notAdded';
+        } else if (calendar === 'notAdded') {
+          // The link was refused, yet an event is there now (another device,
+          // the server): the calendar holds it, so do not say otherwise.
+          calendar = undefined;
+        }
+      } catch (calErr) {
+        console.warn('[ProtonAccounts] Calendar update failed (email was sent):', calErr && calErr.message);
+      }
+    });
+
+    return calendar ? { success: true, calendar } : { success: true };
   }
 
-  /** Look up a calendar event by its UID across all personal calendars. */
-  async function getCalendarEventByUID(accountId, uid) {
+  // Which calendars are the user's own personal ones, per account, for a few
+  // minutes: an event counts as "in the calendar" only there, as for
+  // Proton's Mail app (ownedPersonalCalendars). A copy in a calendar shared
+  // with the user is someone else's; answering must not write into it, nor
+  // take it for the user's own copy.
+  const _calendarsByAccount = new Map();
+  async function _ownCalendars(accountId, refresh) {
+    const cached = _calendarsByAccount.get(accountId);
+    if (cached && !refresh && Date.now() - cached.at < 10 * 60 * 1000) return cached;
+    const list = await request(accountId, 'GET', 'calendar/v1', { params: { ReturnFlags: 1 } });
+    const owned = new Set(); // personal calendars of the user's own
+    const usable = new Set(); // of those, active and writable (a copy can go there)
+    const writable = new Set(); // personal calendars the user can write to, shared ones too
+    const all = new Set();
+    // CALENDAR_FLAGS: ACTIVE=1, SELF_DISABLED=32, SUPER_OWNER_DISABLED=64; WRITE=16.
+    for (const c of (list && list.Calendars) || []) {
+      all.add(c.ID);
+      const member = c.Members && c.Members[0];
+      if (c.Type !== 0 || !member) continue;
+      const canWrite = typeof member.Permissions !== 'number' || (member.Permissions & 16) !== 0;
+      if (canWrite) writable.add(c.ID);
+      const owner = String((c.Owner && c.Owner.Email) || '').toLowerCase();
+      if (!owner || owner !== String(member.Email || '').toLowerCase()) continue;
+      owned.add(c.ID);
+      const active = typeof member.Flags !== 'number' || ((member.Flags & 1) && !(member.Flags & (32 | 64)));
+      if (active && canWrite) usable.add(c.ID);
+    }
+    const entry = { owned, usable, writable, all, at: Date.now() };
+    _calendarsByAccount.set(accountId, entry);
+    return entry;
+  }
+
+  /** Look up a calendar event by its UID in the user's personal calendars:
+   *  with opts.ownOnly only in the ones the user owns (an answered
+   *  invitation's copy); with opts.writable in every one the user can write
+   *  to, shared ones too ("Add to Proton Calendar" can save there, so a copy
+   *  there must offer Open, not a second Add; a read-only colleague's copy
+   *  must not hide Add). By the UID as the API stores it: Proton keeps only
+   *  the last 191 characters of a longer one (ProtonCalendarICS.apiUid). */
+  async function getCalendarEventByUID(accountId, uid, opts) {
     const result = await request(accountId, 'GET', 'calendar/v1/events', {
-      params: { UID: uid, Type: 0 },
+      params: { UID: ProtonCalendarICS.apiUid(uid), CalendarType: 0 },
     });
-    return result.Events || [];
+    const events = result.Events || [];
+    const which = opts && (opts.ownOnly ? 'owned' : (opts.writable ? 'writable' : null));
+    if (!events.length || !which) return events;
+    // A calendar the cached list does not know (just created) refreshes it
+    // once. If the list cannot be read, every event counts, as before.
+    try {
+      let calendars = await _ownCalendars(accountId, false);
+      if (events.some((e) => !calendars.all.has(e.CalendarID))) calendars = await _ownCalendars(accountId, true);
+      return events.filter((e) => calendars[which].has(e.CalendarID));
+    } catch (e) {
+      return events;
+    }
   }
 
   /** Get full calendar event details including attendee info. */
@@ -4229,9 +4362,13 @@ const ProtonAccounts = (() => {
         return [];
       }
 
-      // Import calendar private keys using the decrypted passphrase
+      // Import calendar private keys using the decrypted passphrase. The
+      // PRIMARY key (Flags bit 2) comes first: callers that write an event
+      // wrap its session keys to calKeys[0], and Proton expects the primary.
+      const PRIMARY = 2;
+      const ordered = calKeys.slice().sort((a, b) => ((b.Flags & PRIMARY) ? 1 : 0) - ((a.Flags & PRIMARY) ? 1 : 0));
       const decryptedCalKeys = [];
-      for (const ck of calKeys) {
+      for (const ck of ordered) {
         try {
           const keyObj = await openpgp.readPrivateKey({ armoredKey: ck.PrivateKey });
           const decrypted = await openpgp.decryptKey({ privateKey: keyObj, passphrase: decryptedPassphrase });
@@ -4353,40 +4490,99 @@ const ProtonAccounts = (() => {
    *
    * A recurring UID resolves to a master event (RecurrenceID null) plus one
    * event per modified occurrence (RecurrenceID = the occurrence's Unix time).
-   *  - Whole-series RSVP (no recurrence): the master.
-   *  - Single-occurrence RSVP: the matching exception. With exactly one
-   *    exception we use it; with several we can't disambiguate without
-   *    timezone-exact RecurrenceID math, so we return null and callers SKIP
-   *    the local own-status update rather than write onto the wrong event or
-   *    the whole series (the emailed REPLY already carried RECURRENCE-ID, so
-   *    the organizer is correct regardless).
+   *  - Whole-series RSVP (no recurrence): the master, or null when there is
+   *    none (only exceptions, e.g. the standalone copy of one answered
+   *    occurrence: writing a series answer onto it would be wrong).
+   *  - Single-occurrence RSVP: the exception whose RecurrenceID equals the
+   *    occurrence's time (recurrenceTime, ProtonCalendarTZ.unixTime), or, for
+   *    an all-day exception, the occurrence's date at midnight UTC
+   *    (allDayTime: Outlook writes a date-time RECURRENCE-ID for an all-day
+   *    series). With no such exception, or no computable time, null: never
+   *    another occurrence, never the master. Callers then SKIP the local
+   *    own-status update (the emailed REPLY already carried RECURRENCE-ID,
+   *    so the organizer is correct regardless).
    */
-  function _pickEventForScope(events, isOccurrence) {
+  function _pickEventForScope(events, isOccurrence, recurrenceTimes, allDayTime) {
     if (!events || events.length === 0) return null;
-    if (!isOccurrence) {
-      return events.find(e => !e.RecurrenceID) || events[0];
-    }
-    const exceptions = events.filter(e => e.RecurrenceID);
-    return exceptions.length === 1 ? exceptions[0] : null;
+    if (!isOccurrence) return events.find(e => !e.RecurrenceID) || null;
+    const times = (Array.isArray(recurrenceTimes) ? recurrenceTimes : [recurrenceTimes])
+      .filter((t) => typeof t === 'number' && isFinite(t));
+    if (!times.length) return null;
+    return events.find(e => e.RecurrenceID && times.includes(Number(e.RecurrenceID)))
+      || (typeof allDayTime === 'number'
+        && events.find(e => e.RecurrenceID && e.FullDay && Number(e.RecurrenceID) === allDayTime))
+      || null;
   }
 
+  /** The event of an answer's scope among the user's events with one UID:
+   *  { ev } when there is one; { notFound: true } when for this answer the
+   *  invitation is not in the calendar (no event at all, or nothing for the
+   *  scope and no series it belongs to: only the standalone copies of other
+   *  occurrences, as for Proton's Mail app); {} when it is left alone (a
+   *  series that holds no copy of the occurrence yet: Proton would save a
+   *  single edit, not built here; or an occurrence whose time is unknown). */
+  function _scopeMatch(events, recurrenceId) {
+    if (!events || events.length === 0) return { notFound: true };
+    const master = events.find((e) => !e.RecurrenceID) || null;
+    // The occurrence's time, as Proton stores it in RecurrenceID.
+    let times = [];
+    let allDayTime = null;
+    if (recurrenceId) {
+      const dt = ProtonCalendarICS.parseDateLine(recurrenceId);
+      times = ProtonCalendarTZ.unixTimes(dt);
+      // A zone the browser cannot place (Outlook's "Customized Time Zone")
+      // or a floating time: read the wall time in the zone Proton stored
+      // this event under. The match stays exact.
+      const stored = (master || events[0]).StartTimezone;
+      if (!times.length && dt && stored) {
+        times = ProtonCalendarTZ.unixTimes({ ...dt, isUTC: false, isAllDay: false, tzid: null }, stored);
+      }
+      if (dt) allDayTime = Date.UTC(dt.year, dt.month - 1, dt.day) / 1000;
+    }
+    const ev = _pickEventForScope(events, !!recurrenceId, times, allDayTime);
+    if (ev) return { ev, times };
+    if (!master && (!recurrenceId || times.length)) return { notFound: true, scope: true, times };
+    return { times };
+  }
+
+  /** A UID prefix for the diagnostic log: the UID comes from the mail, so
+   *  only printable characters, never a line break or a "key=value" lookalike. */
+  function _diagUid(uid) {
+    return String(uid || '').slice(0, 14).replace(/[^\x21-\x7e]|=/g, '_');
+  }
+
+  /** getCalendarAttendees for the card. An answer to this invitation still
+   *  on its way (the popup was closed and opened again, or a popped-out
+   *  window): wait for it, for a while, so the card shows its outcome instead
+   *  of offering to add it again. The answer itself reads through
+   *  _readCalendarAttendees, never this: it would wait for itself. */
   async function getCalendarAttendees(accountId, eventUID, recurrenceId) {
+    const pending = _inviteQueue.get(accountId + '|' + eventUID);
+    if (pending) await Promise.race([pending, new Promise((r) => setTimeout(r, 20000))]);
+    return _readCalendarAttendees(accountId, eventUID, recurrenceId);
+  }
+
+  async function _readCalendarAttendees(accountId, eventUID, recurrenceId) {
     try {
-      const events = await getCalendarEventByUID(accountId, eventUID);
+      const events = await getCalendarEventByUID(accountId, eventUID, { ownOnly: true });
       if (!events || events.length === 0) {
         debugLog('[ProtonAccounts] No calendar event found for UID:', eventUID);
         return { notFound: true };
       }
-      const ev = _pickEventForScope(events, !!recurrenceId);
+      const scope = _scopeMatch(events, recurrenceId);
+      const ev = scope.ev || null;
       // Diagnostic: how many calendar events share this UID (duplicates from a
       // re-imported/sequence-bumped invite?) and which one we target.
       ProtonDiag.record('rsvp.lookup', {
-        uid: (eventUID || '').slice(0, 14),
+        uid: _diagUid(eventUID),
         eventsForUid: events.length,
         isOccurrence: !!recurrenceId,
+        // Whether the occurrence's time could be worked out (else no pick).
+        occurrenceTime: recurrenceId ? (scope.times && scope.times.length ? 'yes' : 'unknown') : 'n/a',
         picked: ev ? (ev.ID || '').slice(0, 10) : 'none',
       });
       if (!ev) {
+        if (scope.notFound) return { notFound: true, scope: true };
         debugLog('[ProtonAccounts] Could not isolate occurrence for UID:', eventUID,
           '- leaving local calendar untouched');
         return null;
@@ -4415,7 +4611,7 @@ const ProtonAccounts = (() => {
       // whether our RSVP actually persisted server-side on the next read,
       // without logging any addresses.
       ProtonDiag.record('rsvp.attendees', {
-        uid: (eventUID || '').slice(0, 14),
+        uid: _diagUid(eventUID),
         n: enriched.length,
         statuses: enriched.map(a => a.Status).join(''),
         withEmail: enriched.filter(a => a.Email).length,
@@ -4425,17 +4621,25 @@ const ProtonAccounts = (() => {
         calendarId: ev.CalendarID,
         eventId: ev.ID,
         attendees: enriched,
+        // For the alarms that follow an answer (_updateCalendarAttendeeStatus).
+        isOrganizer: full.IsOrganizer,
+        notifications: full.Notifications,
+        color: full.Color === undefined ? null : full.Color,
       };
     } catch (e) {
+      // Not "not found": a failed lookup must never lead to saving a copy
+      // (one may be there), and it must not pass for "found" either.
       console.warn('[ProtonAccounts] Calendar attendee lookup failed:', e.message);
-      return null;
+      return { lookupFailed: true };
     }
   }
 
   /** SHA-1 of a binary string, hex-encoded. Matches Proton's
    *  binaryStringToUint8Array + computeHash('unsafeSHA1').toHex(). */
   async function _sha1Hex(str) {
-    const bytes = Uint8Array.from(str, (c) => c.charCodeAt(0) & 0xff);
+    // One byte per UTF-16 unit (its low 8 bits), as Proton hashes tokens.
+    const bytes = new Uint8Array(str.length);
+    for (let i = 0; i < str.length; i++) bytes[i] = str.charCodeAt(i);
     const buf = await crypto.subtle.digest('SHA-1', bytes);
     return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('');
   }
@@ -4471,17 +4675,23 @@ const ProtonAccounts = (() => {
   /** Update an attendee's participation status on the calendar event.
    *  recurrenceId (the invite's RECURRENCE-ID, if any) scopes the update to a
    *  single occurrence so a per-occurrence RSVP never writes onto the whole
-   *  series. */
-  async function _updateCalendarAttendeeStatus(accountId, eventUID, attendeeToken, partstat, attendeeEmail, recurrenceId) {
+   *  series. updateTime (Unix seconds, default now) is the time the answer is
+   *  recorded at. Returns 'updated', 'failed' (the PUT was refused),
+   *  'notFound' (not in the user's own calendars for this scope), 'error'
+   *  (the calendar could not be read) or 'skipped'. */
+  async function _updateCalendarAttendeeStatus(accountId, eventUID, attendeeToken, partstat, attendeeEmail, recurrenceId, updateTime) {
     const statusMap = { ACCEPTED: 3, TENTATIVE: 1, DECLINED: 2 };
     const apiStatus = statusMap[partstat];
-    if (apiStatus === undefined) return;
+    if (apiStatus === undefined) return 'skipped';
 
-    const calData = await getCalendarAttendees(accountId, eventUID, recurrenceId);
+    // The answer's own read: never the card's waiting getCalendarAttendees.
+    const calData = await _readCalendarAttendees(accountId, eventUID, recurrenceId);
+    if (calData && calData.notFound) return 'notFound';
+    if (calData && calData.lookupFailed) return 'error';
     if (!calData || !calData.attendees || calData.attendees.length === 0) {
       console.warn('[ProtonAccounts] Could not isolate this event/occurrence for UID:', eventUID,
         '- RSVP email was sent; skipping local status update');
-      return;
+      return 'skipped';
     }
 
     // Identify which attendee is "us", in priority order, most reliable first:
@@ -4506,7 +4716,8 @@ const ProtonAccounts = (() => {
 
     if (!attendee && wantEmail && eventUID) {
       try {
-        const candidates = await _attendeeTokenCandidates(eventUID, attendeeEmail);
+        // Tokens hash the UID as the API stores it (the last 191 characters).
+        const candidates = await _attendeeTokenCandidates(ProtonCalendarICS.apiUid(eventUID), attendeeEmail);
         attendee = calData.attendees.find(a => candidates.has(a.Token));
         if (attendee) matchedVia = 'token-candidate';
       } catch (e) {
@@ -4517,8 +4728,8 @@ const ProtonAccounts = (() => {
     // Diagnostic: record whether we found "us" among the calendar attendees and
     // how, so an RSVP that doesn't stick is visible in the exported diag log.
     ProtonDiag.record('rsvp.update', {
-      uid: (eventUID || '').slice(0, 14),
-      attendeeEmail: wantEmail,
+      uid: _diagUid(eventUID),
+      attendeeEmail: ProtonSenderAlias.forLog(wantEmail),
       hasToken: attendeeToken ? 'yes' : 'no',
       calAttendees: calData.attendees.length,
       matched: attendee ? matchedVia : 'NONE',
@@ -4530,13 +4741,13 @@ const ProtonAccounts = (() => {
       // The RSVP email was still sent to the organizer; only the local calendar
       // copy's own-status won't update in this (rare) case.
       console.warn('[ProtonAccounts] Could not identify self attendee for', attendeeEmail, '- skipping local status update');
-      return;
+      return 'skipped';
     }
 
     try {
       await request(accountId, 'PUT',
         `calendar/v1/${calData.calendarId}/events/${calData.eventId}/attendees/${attendee.ID}`, {
-          data: { Status: apiStatus, UpdateTime: Math.floor(Date.now() / 1000) },
+          data: { Status: apiStatus, UpdateTime: updateTime || Math.floor(Date.now() / 1000) },
         });
       // Diagnostic: the PUT result was previously swallowed. Capture success so a
       // "matched but didn't stick" case points at the server, not the matching.
@@ -4547,6 +4758,8 @@ const ProtonAccounts = (() => {
         status: apiStatus,
       });
       debugLog('[ProtonAccounts] Calendar attendee status updated to', partstat);
+      await _alarmsForAnswer(accountId, calData, attendee.Status, apiStatus);
+      return 'updated';
     } catch (e) {
       // Capture the failure (incl. Proton error code/message) so a rejected
       // partstat PUT on a sequence-bumped/external invite is visible in the log.
@@ -4557,7 +4770,422 @@ const ProtonAccounts = (() => {
         error: (e && e.message ? String(e.message) : 'unknown').slice(0, 120),
       });
       console.warn('[ProtonAccounts] Calendar status update failed:', e.message);
+      return 'failed';
     }
+  }
+
+  // --- Answering an invitation that is not in the calendar yet ---
+  //
+  // Proton's Mail app never adds an invitation when it is opened. Its server
+  // adds the invitations it can read by itself, when the user's "Add to
+  // calendar and mark as pending" setting is on (on by default); an
+  // invitation it cannot read, the invitations of a user who turned that
+  // off, and an event the user deleted are not in the calendar. When the
+  // user answers one of those, the Mail app saves the user's copy itself,
+  // and so does Mail Checker, in Proton's order: a mailed invitation is
+  // saved after its reply went out (the answer travels by mail); an
+  // invitation from Proton Calendar is linked to the organizer's event
+  // first (the answer travels through the server), then the reply is sent.
+
+  // Calendar writes for one invitation run one after another: two answers to
+  // the same invitation (the popup and a popped-out window) must not both see
+  // "not in the calendar" and each save a copy. A previous answer that hangs
+  // (a dead connection) holds the next one back for 30 s at most.
+  const _inviteQueue = new Map();
+  function _oneInviteAtATime(key, fn) {
+    const prev = _inviteQueue.get(key);
+    const ready = prev ? Promise.race([prev, new Promise((r) => setTimeout(r, 30000))]) : Promise.resolve();
+    const run = ready.then(fn);
+    const tail = run.then(() => {}, () => {});
+    _inviteQueue.set(key, tail);
+    tail.then(() => { if (_inviteQueue.get(key) === tail) _inviteQueue.delete(key); });
+    return run;
+  }
+
+  /** Alarms follow the answer, by Proton's rule (getInvitedVeventWithAlarms):
+   *  No takes them all away; Yes or Maybe after No or no answer gives the
+   *  calendar's default ones to a copy that has none; between Yes and Maybe,
+   *  and on a copy with alarms of its own, they stay. Attendee copies only;
+   *  a failure here is ignored, as Proton ignores it. */
+  async function _alarmsForAnswer(accountId, calData, before, now) {
+    if (calData.isOrganizer !== 0 || calData.notifications === undefined) return;
+    const current = calData.notifications;
+    const none = Array.isArray(current) && current.length === 0;
+    let next;
+    if (now === 2) {
+      if (!none) next = [];
+    } else if (before !== 1 && before !== 3 && none) {
+      next = null;
+    }
+    if (next === undefined) return;
+    try {
+      await request(accountId, 'PUT', `calendar/v1/${calData.calendarId}/events/${calData.eventId}/personal`, {
+        data: { Notifications: next, Color: calData.color },
+      });
+      ProtonDiag.record('rsvp.alarms', { ok: 'yes', alarms: next === null ? 'default' : 'none' });
+    } catch (e) {
+      ProtonDiag.record('rsvp.alarms', { ok: 'no', error: (e && e.message ? String(e.message) : 'unknown').slice(0, 120) });
+    }
+  }
+
+  // Control characters that a UID, an address or a recurrence rule never
+  // holds: a bare CR among them would end a line early for some readers, and
+  // so would NEL and the Unicode line and paragraph separators.
+  // eslint-disable-next-line no-control-regex -- matching them is the point
+  const CONTROL_CHAR = /[\x00-\x08\x0a-\x1f\x7f-\x9f]/;
+  // Written as code points: a literal U+2028 in this file would end the line.
+  const LINE_SEPARATORS = [String.fromCharCode(0x2028), String.fromCharCode(0x2029)];
+  function _hasControl(v) {
+    const s = String(v);
+    return CONTROL_CHAR.test(s) || LINE_SEPARATORS.some((c) => s.includes(c));
+  }
+
+  // The recurrence Proton's Mail app accepts in an invitation
+  // (getIsRruleSupported for invitations): these frequencies, intervals and
+  // counts up to these limits, and no end after 2037.
+  const RRULE_INTERVAL_MAX = { DAILY: 999, WEEKLY: 4999, MONTHLY: 999, YEARLY: 99 };
+  const RRULE_COUNT_MAX = 499;
+  function _supportedRrule(rrule) {
+    const freq = String(rrule.FREQ || '').toUpperCase();
+    if (!Object.prototype.hasOwnProperty.call(RRULE_INTERVAL_MAX, freq)) return false;
+    const interval = rrule.INTERVAL === undefined ? 1 : Number(rrule.INTERVAL);
+    if (!Number.isInteger(interval) || interval < 1 || interval > RRULE_INTERVAL_MAX[freq]) return false;
+    if (rrule.COUNT !== undefined) {
+      const count = Number(rrule.COUNT);
+      if (!Number.isInteger(count) || count < 1 || count > RRULE_COUNT_MAX) return false;
+    }
+    if (rrule.UNTIL !== undefined && !(/^\d{8}/.test(rrule.UNTIL) && Number(rrule.UNTIL.slice(0, 4)) <= 2037)) return false;
+    return true;
+  }
+
+  /** The invitation a CALENDAR_RSVP answers, as { event, parsed, self }, when
+   *  its copy may be saved (event: ready to save; parsed: as read from the
+   *  mail); otherwise { reason } for the diagnostic log. No network: it runs
+   *  before every reply. */
+  function _invitationToSave(opts) {
+    const text = typeof opts.inviteIcs === 'string' ? opts.inviteIcs : '';
+    if (!text) return { reason: 'no-ics' };
+    // One event per invitation: an .ics that also carries changed
+    // occurrences (several VEVENTs) is a series Proton saves as several
+    // linked events, which is not built here.
+    if (ProtonCalendarICS.countVevents(text) !== 1) return { reason: 'vevents' };
+    const parsed = ProtonCalendarICS.parse(text);
+    if (!parsed) return { reason: 'parse' };
+    if (parsed.method !== 'REQUEST') return { reason: 'method' };
+    if (parsed.uid !== opts.eventUID) return { reason: 'uid' };
+    // The answer is for the scope this VEVENT has: the whole event or series,
+    // or one occurrence of it.
+    if (!!opts.recurrenceId !== !!parsed.recurrenceId) return { reason: 'scope' };
+    const want = String(opts.attendeeEmail || '').trim().toLowerCase();
+    const self = want && parsed.attendees.find((a) => String(a.email || '').trim().toLowerCase() === want);
+    if (!self) return { reason: 'attendee' };
+    if (!parsed.organizer || !parsed.organizer.email) return { reason: 'organizer' };
+    if ([parsed.uid, parsed.organizer.email, parsed.rrule && parsed.rrule.raw, ...parsed.attendees.map((a) => a.email)]
+      .some((v) => v && _hasControl(v))) return { reason: 'control' };
+    // Dates Proton keeps (1970 to 2037), and a start and end of one kind:
+    // both all-day or both timed.
+    const inRange = (d) => !d || (d.year >= 1970 && d.year <= 2037);
+    if (![parsed.dtstart, parsed.dtend, parsed.recurrenceId].every(inRange)
+      || (parsed.dtend && !!parsed.dtend.isAllDay !== !!parsed.dtstart.isAllDay)) return { reason: 'dates' };
+    // As in Proton's Mail app: a supported recurrence only, and a single
+    // occurrence never with a recurrence of its own.
+    if (parsed.rrule && (parsed.recurrenceId || !_supportedRrule(parsed.rrule))) return { reason: 'rrule' };
+    // A floating time (no zone, no Z) belongs to the invitation's own zone
+    // (X-WR-TIMEZONE or its only VTIMEZONE), as Proton's Mail app reads it;
+    // with none, Proton refuses the invitation, and so does this.
+    let event = parsed;
+    const floating = (d) => !!d && !d.isUTC && !d.isAllDay && !d.tzid;
+    if ([parsed.dtstart, parsed.dtend, parsed.recurrenceId, ...(parsed.exdates || [])].some(floating)) {
+      const zone = parsed.calendarZone;
+      if (!zone || _hasControl(zone)) return { reason: 'floating' };
+      const zoned = (d) => (floating(d) ? { ...d, tzid: zone } : d);
+      event = {
+        ...parsed,
+        dtstart: zoned(parsed.dtstart), dtend: zoned(parsed.dtend), recurrenceId: zoned(parsed.recurrenceId),
+        exdates: parsed.exdates && parsed.exdates.map(zoned),
+      };
+    }
+    return { event, parsed, self };
+  }
+
+  /** True when the reply the card built describes the event about to be
+   *  saved: same UID, start, end, occurrence, title and organizer, and the
+   *  location the card showed (shownLocation, as the card holds it: escaped).
+   *  The card reads the mail with the popup's parser, the copy comes from
+   *  this one; a crafted .ics that the two read differently is refused rather
+   *  than putting into the calendar something the user never saw. */
+  function _matchesReply(parsed, replyIcs, shownLocation) {
+    const reply = ProtonCalendarICS.parse(String(replyIcs || ''));
+    if (!parsed || !reply) return false;
+    const when = (d) => (d ? ProtonCalendarICS.dateTimeLine('X', d) : '');
+    const who = (p) => String((p && p.email) || '').trim().toLowerCase();
+    return reply.uid === parsed.uid
+      && when(reply.dtstart) === when(parsed.dtstart)
+      && (!reply.dtend || when(reply.dtend) === when(parsed.dtend))
+      && when(reply.recurrenceId) === when(parsed.recurrenceId)
+      // The card trims the title it echoes; this parser keeps it as written.
+      && (reply.summary || '').trim() === (parsed.summary || '').trim()
+      && who(reply.organizer) === who(parsed.organizer)
+      && (typeof shownLocation !== 'string'
+        || (ProtonCalendarICS.unescapeText(shownLocation) || '').trim() === (parsed.location || '').trim());
+  }
+
+  /** The organizer's session key and the user's token from a Proton
+   *  Calendar invitation, as a linked copy needs them, or null. */
+  function _protonLinkKeys(inv, keys) {
+    const token = (inv && inv.self && inv.self.pmToken) || '';
+    if (!keys || !/^[0-9a-f]{40}$/i.test(token)) return null;
+    let sessionKey;
+    try { sessionKey = ProtonBinary.base64ToUint8(keys.sessionKey || ''); } catch (e) { return null; }
+    return sessionKey && sessionKey.length === 32 ? { token, sessionKey } : null;
+  }
+
+  /** Whether answering this invitation could save the user's copy, for the
+   *  card's "your answer adds it": the checks of an answer, the card's own
+   *  reply against what would be saved (_matchesReply), and every time zone
+   *  being one the API accepts or one it can be mapped to. */
+  async function canSaveInvitation(accountId, opts) {
+    const o = opts || {};
+    const inv = _invitationToSave(o);
+    if (!inv.event) return false;
+    if (o.replyIcs !== undefined && !_matchesReply(inv.parsed, o.replyIcs, o.shownLocation)) return false;
+    const pm = _protonInvitationKeys(inv.event);
+    if (pm && !_protonLinkKeys(inv, pm)) return false;
+    if (await _organizedByUser(accountId, inv.event)) return false;
+    const e = inv.event;
+    const zones = new Set([e.dtstart, e.dtend, e.recurrenceId, ...(e.exdates || [])]
+      .filter((d) => d && d.tzid && !d.isUTC).map((d) => d.tzid));
+    if (zones.size) {
+      const allowed = await _supportedZones(accountId);
+      for (const z of zones) if (!ProtonCalendarTZ.resolve(z, allowed)) return false;
+    }
+    return true;
+  }
+
+  /** True when the user organizes the event themselves (from one of their
+   *  own addresses or a +alias of one): that is their own event, never an
+   *  invitation to keep a copy of. */
+  async function _organizedByUser(accountId, event) {
+    const owned = await getAddresses(accountId);
+    return ProtonSenderAlias.resolve(event.organizer.email, owned).ok;
+  }
+
+  /** An invitation sent from Proton Calendar carries the organizer's event ID
+   *  and session key, which is what a linked copy is made of. The event ID
+   *  alone already makes it one (as for Proton's Mail app): it is then only
+   *  ever linked, never saved as a copy of its own, and without its session
+   *  key it cannot be linked (sessionKey ''). */
+  function _protonInvitationKeys(event) {
+    const extra = (event && event.extra) || {};
+    const field = (name) => (Object.prototype.hasOwnProperty.call(extra, name) ? String(extra[name].value || '').trim() : '');
+    const id = field('X-PM-SHARED-EVENT-ID');
+    return id ? { sharedEventId: id, sessionKey: field('X-PM-SESSION-KEY') } : null;
+  }
+
+  // Proton's alarm rule for an answered invitation: Yes and Maybe get the
+  // calendar's default alarms (null), No gets none (an empty list).
+  function _inviteNotifications(partstat) {
+    return (partstat === 'ACCEPTED' || partstat === 'TENTATIVE') ? null : [];
+  }
+
+  /** The invitation with the user's answer on their own attendee line. */
+  function _withAnswer(event, self, partstat) {
+    const me = String(self.email || '').trim().toLowerCase();
+    return {
+      ...event,
+      // isSelf: the serializer keeps this line when another one has the same
+      // token (another spelling of the user's mailbox, listed first).
+      attendees: event.attendees.map((a) =>
+        (String(a.email || '').trim().toLowerCase() === me ? { ...a, partstat, isSelf: true } : a)),
+    };
+  }
+
+  // The time zones Proton's calendar API accepts, read once per worker.
+  let _allowedZones = null;
+  async function _supportedZones(accountId) {
+    if (_allowedZones) return _allowedZones;
+    try {
+      const r = await request(accountId, 'GET', 'calendar/v1/timezones');
+      if (r && Array.isArray(r.Timezones) && r.Timezones.length) _allowedZones = new Set(r.Timezones);
+    } catch (e) {
+      debugLog('[ProtonAccounts] Time zone list unavailable:', e && e.message);
+    }
+    return _allowedZones;
+  }
+
+  /** The event with every TZID the API would refuse ("W. Europe Standard
+   *  Time" from Outlook, Exchange and Teams, a renamed zone) replaced by one
+   *  it accepts (ProtonCalendarTZ). A zone with no known equivalent is left
+   *  as written: the API then refuses the event and the caller says so. */
+  async function _withSupportedZones(accountId, event) {
+    const dates = [event.dtstart, event.dtend, event.recurrenceId, ...(event.exdates || [])];
+    const zones = new Set(dates.filter((d) => d && d.tzid && !d.isUTC).map((d) => d.tzid));
+    if (!zones.size) return event;
+    const allowed = await _supportedZones(accountId);
+    const map = new Map();
+    for (const z of zones) map.set(z, ProtonCalendarTZ.resolve(z, allowed) || z);
+    const fix = (d) => (d && d.tzid && !d.isUTC && map.get(d.tzid) !== d.tzid ? { ...d, tzid: map.get(d.tzid) } : d);
+    return {
+      ...event,
+      dtstart: fix(event.dtstart),
+      dtend: fix(event.dtend),
+      recurrenceId: fix(event.recurrenceId),
+      exdates: event.exdates && event.exdates.map(fix),
+    };
+  }
+
+  /** Where an invitation copy goes, and the keys to write it with. */
+  async function _invitationCalendarContext(accountId, preferCalendarId) {
+    // The calendar that already holds this UID's other parts (another
+    // occurrence's copy), when it is an active calendar of the user's own:
+    // one UID, one calendar. Else the default, as Proton's Mail app picks it.
+    let calendarId = null;
+    if (preferCalendarId) {
+      try {
+        if ((await _ownCalendars(accountId, false)).usable.has(preferCalendarId)) calendarId = preferCalendarId;
+      } catch (e) { /* the default below */ }
+    }
+    if (!calendarId) calendarId = await ProtonCalendarAPI.invitationCalendarId(accountId);
+    if (!calendarId) throw new Error('No calendar of your own to add it to');
+    const bootstrap = await request(accountId, 'GET', `calendar/v2/${calendarId}/bootstrap`);
+    const member = bootstrap && bootstrap.Members && bootstrap.Members[0];
+    if (!member || !member.ID) throw new Error('Calendar membership not found');
+    const account = getAccount(accountId);
+    const memberEmail = (member.Email || '').toLowerCase();
+    // As in addToCalendar: the server only accepts parts signed by the key
+    // of the address the calendar membership belongs to.
+    const signingKey = (memberEmail && account && account.addressKeyMap && account.addressKeyMap[memberEmail])
+      || (account && account.decryptedKeys && account.decryptedKeys[0]);
+    if (!signingKey) throw new Error('Keys not unlocked');
+    const calKeys = await _getCalendarKeys(accountId, calendarId); // primary first
+    if (!calKeys.length) throw new Error('Could not unlock calendar key');
+    const calendarPublicKey = calKeys[0].toPublic ? calKeys[0].toPublic() : calKeys[0];
+    return { calendarId, memberId: member.ID, signingKey, calendarPublicKey };
+  }
+
+  /** Proton's canonical form of each address, which its clients ask for
+   *  (core/v4/addresses/canonical, at most 100 a request) before they make
+   *  attendee tokens: lower case, and without what the provider ignores
+   *  (measured: the +tag of proton.me, gmail.com and outlook.com addresses,
+   *  dots in gmail.com ones, dots, hyphens and underscores in proton.me
+   *  ones; a +tag on a custom domain stays).
+   *  Keyed by the address as given. An address the lookup refuses, or every
+   *  address when it fails, is left out: its token is then made from the
+   *  address as written. */
+  async function _canonicalEmails(accountId, emails) {
+    const map = {};
+    const list = [...new Set((emails || []).map((e) => String(e || '').trim()).filter(Boolean))];
+    for (let i = 0; i < list.length; i += 100) {
+      const batch = list.slice(i, i + 100);
+      try {
+        // Each address encoded: a raw "+" would arrive as a space.
+        const query = batch.map((e) => 'Emails[]=' + encodeURIComponent(e)).join('&');
+        const res = await request(accountId, 'GET', 'core/v4/addresses/canonical?' + query);
+        for (const r of (res && Array.isArray(res.Responses) ? res.Responses : [])) {
+          const echoed = r && typeof r.Email === 'string' ? r.Email : '';
+          const given = batch.includes(echoed) ? echoed
+            : batch.find((e) => echoed && e.toLowerCase() === echoed.toLowerCase());
+          const canonical = r && r.Response && r.Response.Code === 1000 ? r.Response.CanonicalEmail : '';
+          if (given && typeof canonical === 'string' && canonical && !_hasControl(canonical)) map[given] = canonical;
+        }
+      } catch (e) {
+        debugLog('[ProtonAccounts] Canonical address lookup failed:', e && e.message);
+      }
+    }
+    return map;
+  }
+
+  /** Save the user's copy of an answered mailed invitation that is not in
+   *  the calendar. Returns 'added', 'updated' when a copy turned up after
+   *  all (another device, or Proton's server), 'notAdded', or undefined
+   *  when the save failed but an event is there now (it is in the calendar,
+   *  only its status could not be set). */
+  async function _saveInvitationCopy(accountId, opts, inv) {
+    const uid = _diagUid(opts.eventUID);
+    try {
+      if (await _organizedByUser(accountId, inv.event)) throw new Error('The user organizes this event');
+      const ctx = await _invitationCalendarContext(accountId, opts.preferCalendarId);
+      const event = await _withSupportedZones(accountId, _withAnswer(inv.event, inv.self, opts.partstat));
+      // How many attendee addresses came back canonical: counts only, never
+      // an address, in the diagnostics.
+      let canonical = 'none';
+      const payload = await ProtonCalendarSerialize.buildPayload(event, {
+        signingKey: ctx.signingKey,
+        calendarPublicKey: ctx.calendarPublicKey,
+        invitation: true,
+        notifications: _inviteNotifications(opts.partstat),
+        // The attendee tokens Proton's clients and server make. On the
+        // organizer's next update, Proton's server replaces a row whose
+        // token came from another spelling (measured with a Google
+        // invitation, 2026-11-10).
+        canonicalEmails: async (emails) => {
+          const map = await _canonicalEmails(accountId, emails);
+          canonical = Object.keys(map).length + '/' + emails.length;
+          return map;
+        },
+      });
+      await ProtonCalendarAPI.createEvent(accountId, ctx.calendarId, ctx.memberId, payload, { invitee: true });
+      ProtonDiag.record('rsvp.import', { uid, kind: 'copy', ok: 'yes', canonical });
+      return 'added';
+    } catch (e) {
+      ProtonDiag.record('rsvp.import', {
+        uid, kind: 'copy', ok: 'no', error: (e && e.message ? String(e.message) : 'unknown').slice(0, 120),
+      });
+      console.warn('[ProtonAccounts] Could not add the answered invitation to the calendar:', e && e.message);
+      const again = await _updateCalendarAttendeeStatus(accountId, opts.eventUID, opts.attendeeToken || '',
+        opts.partstat, opts.attendeeEmail || '', opts.recurrenceId || '').catch(() => 'error');
+      if (again === 'updated') return 'updated';
+      // Not there, or no way to tell: say it was not added.
+      return (again === 'notFound' || again === 'error') ? 'notAdded' : undefined;
+    }
+  }
+
+  /** Link the user's copy of a Proton Calendar invitation to the organizer's
+   *  event. Returns the time the server recorded the answer (Unix seconds),
+   *  or null when it could not be linked. */
+  async function _linkProtonInvitation(accountId, opts, inv, keys) {
+    const uid = _diagUid(opts.eventUID);
+    try {
+      const linkKeys = _protonLinkKeys(inv, keys);
+      if (!linkKeys) throw new Error('The invitation lacks its Proton keys');
+      const { token, sessionKey } = linkKeys;
+      if (await _organizedByUser(accountId, inv.event)) throw new Error('The user organizes this event');
+      const ctx = await _invitationCalendarContext(accountId, opts.preferCalendarId);
+      const payload = await ProtonCalendarSerialize.buildLinkedPayload(await _withSupportedZones(accountId, inv.event), {
+        signingKey: ctx.signingKey,
+        calendarPublicKey: ctx.calendarPublicKey,
+        sharedEventId: keys.sharedEventId,
+        sessionKey: { data: sessionKey, algorithm: 'aes256' },
+        self: { token, partstat: opts.partstat },
+        notifications: _inviteNotifications(opts.partstat),
+      });
+      const saved = await ProtonCalendarAPI.createEvent(accountId, ctx.calendarId, ctx.memberId, payload, { invitee: true });
+      const attendees = (saved && ((saved.AttendeesInfo && saved.AttendeesInfo.Attendees) || saved.Attendees)) || [];
+      const mine = attendees.find((a) => a.Token === token);
+      ProtonDiag.record('rsvp.import', { uid, kind: 'linked', ok: 'yes' });
+      return (mine && mine.UpdateTime) || Math.floor(Date.now() / 1000);
+    } catch (e) {
+      ProtonDiag.record('rsvp.import', {
+        uid, kind: 'linked', ok: 'no', error: (e && e.message ? String(e.message) : 'unknown').slice(0, 120),
+      });
+      console.warn('[ProtonAccounts] Could not link the answered invitation to the organizer\'s event:', e && e.message);
+      return null;
+    }
+  }
+
+  /** The reply to a Proton Calendar invitation, marked the way Proton marks
+   *  it: X-PM-PROTON-REPLY tells the organizer's client that the server
+   *  already has the answer, and DTSTAMP is the time the server recorded it,
+   *  so the organizer's card does not call the reply outdated. */
+  function _asProtonReply(icsData, updateTime) {
+    const stamp = new Date(updateTime * 1000).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+    const out = [];
+    for (const line of String(icsData).split('\r\n')) {
+      if (/^DTSTAMP[:;]/i.test(line)) { out.push('DTSTAMP:' + stamp); continue; }
+      if (/^END:VEVENT$/i.test(line)) out.push('X-PM-PROTON-REPLY;VALUE=BOOLEAN:TRUE');
+      out.push(line);
+    }
+    return out.join('\r\n');
   }
 
   // --- Contacts ---
@@ -4657,6 +5285,7 @@ const ProtonAccounts = (() => {
     sendNewMessage,
     cancelScheduledSend,
     sendCalendarRsvp,
+    canSaveInvitation,
     getCalendarAttendees,
     _attendeeTokenEmailMap, // exposed for unit tests (pure ICS token→email parse)
     _pickEventForScope,     // exposed for unit tests (master vs occurrence selection)
@@ -4701,7 +5330,7 @@ const ProtonAccounts = (() => {
      */
     findCalendarEventByUID: async (accountId, uid) => {
       try {
-        const events = await getCalendarEventByUID(accountId, uid);
+        const events = await getCalendarEventByUID(accountId, uid, { writable: true });
         if (events && events.length > 0) {
           return { exists: true, calendarId: events[0].CalendarID, eventId: events[0].ID };
         }
@@ -4713,8 +5342,8 @@ const ProtonAccounts = (() => {
       return { exists: false };
     },
     addToCalendar: async (accountId, calendarId, icsText) => {
-      const event = ProtonCalendarICS.parse(icsText);
-      if (!event) throw new Error('Could not parse ICS');
+      const parsed = ProtonCalendarICS.parse(icsText);
+      if (!parsed) throw new Error('Could not parse ICS');
       // Same cold-start race as sendCalendarRsvp: keys may still be unlocking
       // right after the worker wakes, so wait for it before judging them.
       await ensureKeysUnlocked(accountId);
@@ -4754,6 +5383,8 @@ const ProtonAccounts = (() => {
         ? calendarPrivateKey.toPublic()
         : calendarPrivateKey;
 
+      // Outlook's Windows zone names are refused by the API as written.
+      const event = await _withSupportedZones(accountId, parsed);
       const payload = await ProtonCalendarSerialize.buildPayload(event, {
         signingKey, calendarPublicKey,
       });
@@ -4762,24 +5393,15 @@ const ProtonAccounts = (() => {
       return { success: true, event: created };
     },
     // --- Exposed for the calendar-add modules ---
-    // request() is already exported above; the helpers below complete the set:
-    // getCalendarKeys(): decrypted calendar private keys (for signing context).
-    // getCalendarPublicKey(): calendar public key used to wrap session keys.
+    // request() is already exported above; the helper below completes the set:
+    // getCalendarKeys(): decrypted calendar private keys, the primary first
+    // (wrap session keys to calKeys[0].toPublic()).
     // (getSigningKey() was removed: it returned decryptedKeys[0], an arbitrary
     // key that was not even address-scoped, and had no callers. The calendar
-    // path resolves its own signing key from addressKeyMap just above.)
+    // path resolves its own signing key from addressKeyMap just above.
+    // getCalendarPublicKey() was removed too: it read Keys[].PublicKey from
+    // the bootstrap, which carries private keys only (measured 2026-11-09),
+    // and had no callers.)
     getCalendarKeys: _getCalendarKeys,
-    getCalendarPublicKey: async (accountId, calendarId) => {
-      const bootstrap = await request(accountId, 'GET',
-        `calendar/v2/${calendarId}/bootstrap`);
-      const keys = (bootstrap && bootstrap.Keys) || [];
-      // Prefer a key we can parse, so a post-quantum key alongside it does not
-      // take out calendar access.
-      const readable = keys.filter(k => !ProtonPqc.isUnsupportedKey(k.PublicKey));
-      const pool = readable.length ? readable : keys;
-      const primary = pool.find(k => k.Flags & 1) || pool[0];
-      if (!primary) return null;
-      return openpgp.readKey({ armoredKey: primary.PublicKey });
-    },
   };
 })();

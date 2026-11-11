@@ -70,6 +70,41 @@ const ProtonCalendarAPI = (() => {
   }
 
   // ------------------------------------------------------------------
+  // invitationCalendarId
+  // ------------------------------------------------------------------
+  //
+  // The calendar an answered invitation is saved to, picked the way
+  // Proton's Mail app picks it (getDefaultCalendar): the user's default
+  // calendar (CalendarUserSettings.DefaultCalendarID) when it is an active
+  // personal calendar the user owns, otherwise the first such calendar in
+  // the user's own order. A calendar shared with the user, a subscription
+  // and a disabled calendar never qualify. Returns the ID, or null.
+  async function invitationCalendarId(accountId) {
+    const [listResult, settingsResult] = await Promise.all([
+      ProtonAccounts.request(accountId, 'GET', 'calendar/v1', { params: { ReturnFlags: 1 } }),
+      ProtonAccounts.request(accountId, 'GET', 'settings/calendar').catch(() => null),
+    ]);
+    const defaultCalendarId =
+      (settingsResult && settingsResult.CalendarUserSettings &&
+       settingsResult.CalendarUserSettings.DefaultCalendarID) || null;
+    // CALENDAR_FLAGS (constants.ts): ACTIVE=1, SELF_DISABLED=32,
+    // SUPER_OWNER_DISABLED=64. Flags live on Members[0].
+    const ACTIVE = 1;
+    const DISABLED = 32 | 64;
+    const WRITE = 16;
+    const owned = ((listResult && listResult.Calendars) || []).filter((c) => {
+      const member = c.Members && c.Members[0];
+      if (c.Type !== 0 || !member) return false;
+      const owner = String((c.Owner && c.Owner.Email) || '').toLowerCase();
+      if (!owner || owner !== String(member.Email || '').toLowerCase()) return false;
+      if (typeof member.Flags === 'number' && (!(member.Flags & ACTIVE) || (member.Flags & DISABLED))) return false;
+      return typeof member.Permissions !== 'number' || (member.Permissions & WRITE) !== 0;
+    }).sort((a, b) => (a.Members[0].Priority || 0) - (b.Members[0].Priority || 0));
+    const pick = owned.find((c) => c.ID === defaultCalendarId) || owned[0];
+    return pick ? pick.ID : null;
+  }
+
+  // ------------------------------------------------------------------
   // createEvent
   // ------------------------------------------------------------------
   //
@@ -82,24 +117,25 @@ const ProtonCalendarAPI = (() => {
   // alongside the MemberID identifying the user's membership in that
   // calendar. The response carries a Responses[] array with one entry
   // per submitted event.
-  async function createEvent(accountId, calendarId, memberId, payload) {
+  //
+  // opts.invitee: the payload is an invited attendee's copy of an answered
+  // invitation (it sets IsOrganizer and Permissions itself). Proton's Mail
+  // app saves those without IsImport, which is meant for .ics imports.
+  async function createEvent(accountId, calendarId, memberId, payload, opts) {
+    const invitee = !!(opts && opts.invitee);
     const body = {
       MemberID: memberId,
-      // IsImport=1 tells the server we're importing an external event
-      // rather than the user creating one from scratch. It relaxes
-      // a couple of "you're the organizer" invariants and matches the
-      // .ics-attachment use case here.
-      IsImport: 1,
       Events: [{
         Overwrite: 0,
-        Event: {
-          ...payload,
-          // Permissions = 3 (read + write) is what Proton's WebClient
-          // sends for the creator's own event.
-          Permissions: 3,
-        },
+        // Permissions is an ATTENDEE permission in Proton's model (SEE=1,
+        // INVITE=2, SEE_AND_INVITE=3). Imports keep the 3 they always sent.
+        Event: invitee ? { ...payload } : { ...payload, Permissions: 3 },
       }],
     };
+    // IsImport=1 tells the server we're importing an external event
+    // rather than the user creating one from scratch: the .ics-attachment
+    // use case of the "Add to Proton Calendar" button.
+    if (!invitee) body.IsImport = 1;
     const result = await ProtonAccounts.request(accountId, 'PUT',
       `calendar/v1/${calendarId}/events/sync`, { data: body });
 
@@ -117,5 +153,5 @@ const ProtonCalendarAPI = (() => {
     return r.Event;
   }
 
-  return { listCalendars, createEvent };
+  return { listCalendars, invitationCalendarId, createEvent };
 })();

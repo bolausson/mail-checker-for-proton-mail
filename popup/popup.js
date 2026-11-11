@@ -74,6 +74,9 @@
   const btnForwardMode = document.getElementById('btn-forward-mode');
   const replyFromRow = document.getElementById('reply-from-row');
   const replyFromSelect = document.getElementById('reply-from');
+  const replyAliasRow = document.getElementById('reply-alias-row');
+  const replyAliasInput = document.getElementById('reply-alias-input');
+  const replyAliasError = document.getElementById('reply-alias-error');
   const forwardToRow = document.getElementById('forward-to-row');
   const forwardToInput = document.getElementById('forward-to');
   const replyCcBccRows = document.getElementById('reply-cc-bcc-rows');
@@ -616,6 +619,7 @@
   function _sendErrorMessage(err) {
     switch (err) {
       case 'PREMIUM_REQUIRED': return ProtonI18n.t('upgradeRequired');
+      case 'SENDER_NOT_OWNED': return ProtonI18n.t('senderNotOwned');
       case 'EXPIRY_REQUIRES_EO_PASSWORD': return ProtonI18n.t('expiryRequiresPassword');
       // Both mean the same thing to the user: we could not confirm how to
       // encrypt for a recipient, so nothing was sent.
@@ -2681,10 +2685,10 @@
     const selected = document.querySelector(`.message-item[data-message-id="${msg.ID}"]`);
     if (selected) selected.classList.add('selected');
 
-    // Sender: "Name <email>" or just email
+    // Sender: "Name <email>" or just email (also when the name is the email)
     const senderName = msg.Sender && msg.Sender.Name;
     const senderEmail = msg.Sender && msg.Sender.Address;
-    if (senderName && senderEmail) {
+    if (senderName && senderEmail && senderName.trim().toLowerCase() !== senderEmail.trim().toLowerCase()) {
       previewSender.textContent = senderName + ' <' + senderEmail + '>';
     } else {
       previewSender.textContent = senderName || senderEmail || ProtonI18n.t('unknown');
@@ -2735,7 +2739,8 @@
     chipReplyCc.clearChips();
     chipReplyBcc.clearChips();
     replyCcBccRows.classList.add('hidden');
-    replyFromSelect.textContent = '';
+    replyPicker.clear();
+    _wantReplyFrom('');
     replyFromRow.classList.add('hidden');
     previewPanel.classList.remove('hidden');
     void previewPanel.offsetWidth;
@@ -2825,19 +2830,37 @@
   // System labels to skip showing as badges
   const SKIP_LABEL_IDS = new Set(['0', '1', '2', '5', '7', '8', '12']);
 
+  // A recipient as "Name <address>", or the address alone when there is no
+  // name or the name is the address itself.
+  function _recipientText(r) {
+    const name = String((r && r.Name) || '').trim();
+    const addr = String((r && r.Address) || '').trim();
+    if (!name || name.toLowerCase() === addr.toLowerCase()) return { name: '', addr: addr || name };
+    return { name, addr };
+  }
+
   function _renderRecipients(msg) {
+    // With "Show recipients' email addresses" (Pro), To, CC and BCC each get
+    // a line of their own and every recipient shows as "Name <address>".
+    // Without it, names only, on one line. A name is isolated (<bdi>), so
+    // right-to-left characters in it cannot reorder the text around it.
+    const full = !!(_settings && _settings.showRecipientAddresses);
+    const lists = [['toLabel', msg.ToList], ['ccLabel', msg.CCList]];
+    if (full) lists.push(['bccLabel', msg.BCCList]);
     const parts = [];
-    const toList = msg.ToList || [];
-    const ccList = msg.CCList || [];
-    if (toList.length > 0) {
-      const names = toList.map(r => r.Name || r.Address).join(', ');
-      parts.push('<span class="recipient-label">to:</span> ' + _escapeHtmlText(names));
+    for (const [label, list] of lists) {
+      const items = (list || []).map(_recipientText).filter((t) => t.addr || t.name);
+      if (items.length === 0) continue;
+      const bdi = (text) => '<bdi>' + _escapeHtmlText(text) + '</bdi>';
+      const shown = items.map(({ name, addr }) => {
+        if (!full) return bdi(name || addr);
+        return name ? bdi(name) + ' &lt;' + bdi(addr) + '&gt;' : bdi(addr);
+      }).join(', ');
+      const line = '<span class="recipient-label">' + _escapeHtmlText(ProtonI18n.t(label)) + '</span> ' + shown;
+      parts.push(full ? '<div class="recipient-line">' + line + '</div>' : line);
     }
-    if (ccList.length > 0) {
-      const names = ccList.map(r => r.Name || r.Address).join(', ');
-      parts.push('<span class="recipient-label">cc:</span> ' + _escapeHtmlText(names));
-    }
-    _setHTML(previewTo, parts.join(' &nbsp; '));
+    previewTo.classList.toggle('recipients-full', full);
+    _setHTML(previewTo, parts.join(full ? '' : ' &nbsp; '));
   }
 
   /**
@@ -3538,10 +3561,186 @@
     }
   }
 
+  // ── The sender: the reply's From and Compose's "Send as" ──
+  // A select of the account's addresses, led by a +alias the mail being
+  // answered was sent to, and ending in "Other +alias…" (Pro), which opens a
+  // field to type a +alias of one of them. Proton delivers any +tag to its
+  // address and sends from one too (lib/sender-alias.js).
+  const OTHER_ALIAS = '#other-alias';
+
+  function _makeSenderPicker(select, aliasRow, aliasInput, aliasError) {
+    let addresses = [];
+    // The select's value before "Other +alias…": the base the field starts
+    // from, and where the select goes back to when Pro is refused.
+    let lastValue = '';
+
+    const option = (value, text) => {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = text;
+      return opt;
+    };
+    const showError = (on) => {
+      aliasError.textContent = on ? ProtonI18n.t('plusAliasInvalid') : '';
+      aliasError.classList.toggle('hidden', !on);
+      aliasInput.setAttribute('aria-invalid', on ? 'true' : 'false');
+    };
+    const closeAlias = () => {
+      aliasRow.classList.add('hidden');
+      showError(false);
+    };
+    // The field, holding `text`, or else "name+@domain" of the address chosen
+    // before (or the first that can carry a +alias) with the caret after "+".
+    const openAlias = (text, focus) => {
+      aliasRow.classList.remove('hidden');
+      showError(false);
+      // Named here, not when the picker is made: by now the UI language is set.
+      aliasInput.setAttribute('aria-label', ProtonI18n.t('otherPlusAlias'));
+      if (text) {
+        aliasInput.value = text;
+      } else {
+        const prev = ProtonSenderAlias.resolve(lastValue, addresses);
+        const base = (prev.ok && ProtonSenderAlias.canCarry(prev.base) && prev.base)
+          || addresses.find(ProtonSenderAlias.canCarry);
+        const at = base.Email.lastIndexOf('@');
+        aliasInput.value = base.Email.slice(0, at) + '+' + base.Email.slice(at);
+        aliasInput.placeholder = base.Email.slice(0, at) + '+shop' + base.Email.slice(at);
+      }
+      if (focus) {
+        aliasInput.focus();
+        const plus = aliasInput.value.indexOf('+');
+        if (!text && plus >= 0) aliasInput.setSelectionRange(plus + 1, plus + 1);
+      }
+    };
+
+    select.addEventListener('change', () => {
+      if (select.value !== OTHER_ALIAS) {
+        lastValue = select.value;
+        closeAlias();
+        return;
+      }
+      // Sending from a +alias you type is Pro.
+      if (!requirePremium('plusAlias')) {
+        select.value = lastValue;
+        return;
+      }
+      openAlias('', true);
+    });
+    aliasInput.addEventListener('input', () => showError(false));
+
+    return {
+      /**
+       * Fill with `list` (GET_ADDRESSES): `detected`, a +alias the mail was
+       * sent to, first; "Other +alias…" last when any address can carry one;
+       * `preferred` (or `detected`) selected.
+       */
+      fill(list, { detected = '', preferred = '' } = {}) {
+        addresses = Array.isArray(list) ? list : [];
+        select.textContent = '';
+        aliasInput.value = '';
+        closeAlias();
+        for (const a of addresses) {
+          select.appendChild(option(a.Email, a.DisplayName ? a.DisplayName + ' <' + a.Email + '>' : a.Email));
+        }
+        if (detected) select.prepend(option(detected, detected + ' ' + ProtonI18n.t('plusAlias')));
+        if (addresses.some(ProtonSenderAlias.canCarry)) {
+          select.appendChild(option(OTHER_ALIAS, ProtonI18n.t('otherPlusAlias')));
+        }
+        const pick = String(detected || preferred || '').toLowerCase();
+        const opt = [...select.options].find((o) => o.value !== OTHER_ALIAS && o.value.toLowerCase() === pick);
+        select.selectedIndex = opt ? opt.index : 0;
+        lastValue = select.value;
+      },
+      clear() {
+        addresses = [];
+        select.textContent = '';
+        aliasInput.value = '';
+        lastValue = '';
+        closeAlias();
+      },
+      /** The sender to send as: the address chosen, or the +alias typed. */
+      value() {
+        return select.value === OTHER_ALIAS ? aliasInput.value.trim() : (select.value || '');
+      },
+      /**
+       * Bring back a saved sender: one of the options, or else (Pro) a +alias
+       * of one of the addresses, in the field.
+       */
+      setValue(email) {
+        if (!email) return;
+        const want = String(email).toLowerCase();
+        const opt = [...select.options].find((o) => o.value !== OTHER_ALIAS && o.value.toLowerCase() === want);
+        if (opt) {
+          select.value = opt.value;
+          lastValue = opt.value;
+          closeAlias();
+          return;
+        }
+        if (!isPremium() || ![...select.options].some((o) => o.value === OTHER_ALIAS)) return;
+        if (!ProtonSenderAlias.resolve(email, addresses).ok) return;
+        select.value = OTHER_ALIAS;
+        openAlias(String(email), false);
+      },
+      /**
+       * Whether the mail can go out from the sender chosen. A typed +alias
+       * needs Pro and must be one of an own address; the field says what is
+       * wrong otherwise.
+       */
+      validate() {
+        if (select.value !== OTHER_ALIAS) return true;
+        if (!requirePremium('plusAlias')) return false;
+        const r = ProtonSenderAlias.resolve(aliasInput.value, addresses, { typed: true });
+        if (r.ok) {
+          aliasInput.value = r.email;
+          return true;
+        }
+        showError(true);
+        aliasInput.focus();
+        return false;
+      },
+      /**
+       * The name the mail goes out with: the address's, or its base's; while
+       * a +alias is still being typed, that of the address the field was
+       * opened from. Never the "Other +alias…" label.
+       */
+      senderName() {
+        let r = ProtonSenderAlias.resolve(this.value(), addresses);
+        if (!r.ok && select.value === OTHER_ALIAS) r = ProtonSenderAlias.resolve(lastValue, addresses);
+        return r.ok ? (r.base.DisplayName || '') : '';
+      },
+      /** Whether the account's addresses have been filled in. */
+      hasAddresses() {
+        return addresses.length > 0;
+      },
+    };
+  }
+
+  const replyPicker = _makeSenderPicker(replyFromSelect, replyAliasRow, replyAliasInput, replyAliasError);
+  // The sender a restored reply draft had. A fill of the From brings it back,
+  // also one that lands after the restore, and it stands in for the select
+  // while the addresses are not (or cannot be) loaded, so the reply is not
+  // sent or saved from the default address instead. Dropped when the user
+  // picks or types a sender, and when another message opens.
+  let _replyFromWant = '';
+
+  function _wantReplyFrom(email) {
+    _replyFromWant = email || '';
+    _applyReplyFromWant();
+  }
+
+  function _applyReplyFromWant() {
+    if (_replyFromWant && replyPicker.hasAddresses()) replyPicker.setValue(_replyFromWant);
+  }
+
+  replyFromSelect.addEventListener('change', () => { _replyFromWant = ''; });
+  replyAliasInput.addEventListener('input', () => { _replyFromWant = ''; });
+
   async function _populateReplyFrom(msg, accountId) {
-    replyFromSelect.textContent = '';
+    replyPicker.clear();
     try {
       const addresses = await browser.runtime.sendMessage({ type: 'GET_ADDRESSES', accountId });
+      // Another message opened while these loaded: its own fill sets the From.
+      if (!_selectedMsg || _selectedMsg.ID !== msg.ID) return;
       if (!Array.isArray(addresses) || addresses.length === 0) {
         replyFromRow.classList.add('hidden');
         return;
@@ -3551,25 +3750,15 @@
 
       // Decide which of our addresses should be the From, i.e. the one this
       // mail was sent TO. Mirrors Proton's own reply logic.
-      let detectedEmail = null;   // an account address to pre-select
-      let plusAlias = null;       // a +alias the mail was addressed to (not a real address)
       const recipients = [...(msg.ToList || []), ...(msg.CCList || [])];
 
-      // 1. Most precise: a +alias the mail was addressed to (e.g.
-      //    app+testers@domain matching our base app@domain). Proton pre-selects
-      //    the +alias itself, so detect it FIRST, before the AddressID match,
+      // 1. Most precise: a +alias the mail was delivered to (e.g.
+      //    app+testers@domain of our app@domain), from the X-Original-To
+      //    header, else the To, CC and BCC lists. Proton pre-selects the
+      //    +alias itself, so detect it FIRST, before the AddressID match,
       //    which only ever resolves to the base address.
-      for (const r of recipients) {
-        const addr = (r.Address || '').toLowerCase();
-        if (!addr.includes('+')) continue;
-        const [localWithPlus, domain] = addr.split('@');
-        const basePart = localWithPlus.split('+')[0];
-        const baseMatch = addresses.find(a => {
-          const [myLocal, myDomain] = a.Email.toLowerCase().split('@');
-          return myLocal === basePart && myDomain === domain;
-        });
-        if (baseMatch) { plusAlias = r.Address; detectedEmail = baseMatch.Email; break; }
-      }
+      const plusAlias = ProtonSenderAlias.detect(msg, addresses);
+      let detectedEmail = plusAlias ? plusAlias.base.Email : null;
 
       // 2. Authoritative for non-alias mail: the message's AddressID. Proton
       //    stamps every message with the user address it belongs to (the
@@ -3596,31 +3785,18 @@
         detectedEmail = primary.Email;
       }
 
-      for (const a of addresses) {
-        const opt = document.createElement('option');
-        opt.value = a.Email;
-        opt.textContent = a.DisplayName ? a.DisplayName + ' <' + a.Email + '>' : a.Email;
-        // Only pre-select a real address when no +alias was detected. When one
-        // was, the prepended +alias option is the selected one.
-        if (!plusAlias && a.Email.toLowerCase() === detectedEmail.toLowerCase()) opt.selected = true;
-        replyFromSelect.appendChild(opt);
-      }
-
       // A +alias the mail was addressed to isn't a separate account address;
-      // offer it explicitly (first) and pre-select it so the reply goes out as
-      // the alias, matching Proton's behaviour.
-      if (plusAlias && plusAlias.includes('+')) {
-        const plusOpt = document.createElement('option');
-        plusOpt.value = plusAlias;
-        plusOpt.textContent = plusAlias + ' ' + ProtonI18n.t('plusAlias');
-        replyFromSelect.prepend(plusOpt);
-        replyFromSelect.selectedIndex = 0;
-      }
+      // it is offered first and pre-selected, so the reply goes out as the
+      // alias, matching Proton's behaviour.
+      replyPicker.fill(addresses, { detected: plusAlias ? plusAlias.email : '', preferred: detectedEmail });
+      _applyReplyFromWant();
 
-      const hasPlusAlias = plusAlias && plusAlias.includes('+');
-      replyFromRow.classList.toggle('hidden', addresses.length <= 1 && !hasPlusAlias);
+      // Shown when there is a choice: several addresses, the +alias the mail
+      // was sent to, or (Pro) "Other +alias…".
+      replyFromRow.classList.toggle('hidden', !(addresses.length > 1 || plusAlias
+        || (isPremium() && addresses.some(ProtonSenderAlias.canCarry))));
     } catch (e) {
-      replyFromRow.classList.add('hidden');
+      if (_selectedMsg && _selectedMsg.ID === msg.ID) replyFromRow.classList.add('hidden');
     }
   }
 
@@ -4301,6 +4477,7 @@
       draft.type = 'compose';
       draft.composeAccountId = _composeAccountId;
       draft.composeFrom = composeFrom.value;
+      draft.composeSender = composePicker.value() || _composeSenderWant;
       draft.composeSubject = composeSubject.value;
       draft.composeBody = composeBody.innerHTML;
       // Snapshot for cross-session undo. Recorded here rather than on every
@@ -4339,7 +4516,7 @@
       // Same snapshot as compose, for undo after the popup has been reopened.
       const rh = _historyFor(replyBody);
       if (rh) { rh.record(); draft.replyHistory = rh.serialize(); }
-      draft.replyFromValue = replyFromSelect.value;
+      draft.replyFromValue = replyPicker.value() || _replyFromWant;
       draft.forwardTo = chipForwardTo.getChips();
       draft.replyCc = chipReplyCc.getChips();
       draft.replyBcc = chipReplyBcc.getChips();
@@ -4654,9 +4831,12 @@
         const accounts = _savedState && _savedState.accounts;
         if (!accounts || accounts.length === 0) return false;
         openCompose(draft.composeAccountId);
+        _composeSenderWant = draft.composeSender || '';
         // Wait for accounts dropdown to populate
         await new Promise(r => setTimeout(r, 150));
         if (draft.composeFrom) composeFrom.value = draft.composeFrom;
+        // "Send as" for that account, with the sender the draft had.
+        _composeSenderReady = _fillComposeSender(composeFrom.value || draft.composeAccountId);
         composeSubject.value = draft.composeSubject || '';
         _showSavedAt(draft.savedAt);
         _setHTML(composeBody, draft.composeBody || '');
@@ -4712,9 +4892,9 @@
         const rh = _historyFor(replyBody);
         if (rh) rh.restore(draft.replyHistory);
         _resolveDraftCidImages();
-        // Wait for sender dropdown to populate, then restore selection
-        await new Promise(r => setTimeout(r, 200));
-        if (draft.replyFromValue) replyFromSelect.value = draft.replyFromValue;
+        // The sender the draft had, a typed +alias included: set now if the
+        // From is filled already, else by the fill when it lands.
+        _wantReplyFrom(draft.replyFromValue);
         if (draft.forwardTo) draft.forwardTo.forEach(c => chipForwardTo.addChip(c.address, c.name));
         if (draft.replyCc) draft.replyCc.forEach(c => chipReplyCc.addChip(c.address, c.name));
         if (draft.replyBcc) draft.replyBcc.forEach(c => chipReplyBcc.addChip(c.address, c.name));
@@ -5027,13 +5207,17 @@
       return;
     }
     if (_blockOnInvalidRecipient(chipForwardTo, chipReplyCc, chipReplyBcc)) return;
+    // A typed +alias: Pro, and one of an own address.
+    if (!replyPicker.validate()) return;
 
     previewReply.classList.add('reply-sending');
     const origBtnText = btnReplySend.textContent;
     btnReplySend.textContent = ProtonI18n.t('sending');
 
     try {
-      const senderAddress = replyFromSelect.value || '';
+      // Before the addresses load (or when they cannot), the sender a
+      // restored draft had; the background checks it is the account's.
+      const senderAddress = replyPicker.value() || _replyFromWant;
       let msgPayload;
       // Read reply attachments as base64
       let replyAttachmentData = null;
@@ -5172,6 +5356,24 @@
   const composeSubject = document.getElementById('compose-subject');
   const composeBody = document.getElementById('compose-body');
   const composeFrom = document.getElementById('compose-from');
+  const composeFromRow = document.getElementById('compose-from-row');
+  const composeSenderRow = document.getElementById('compose-sender-row');
+  const composeSenderLabel = document.getElementById('compose-sender-label');
+  const composeSenderSelect = document.getElementById('compose-sender');
+  const composeAliasInput = document.getElementById('compose-alias-input');
+  // How many accounts the From select lists (see _syncComposeFromRows).
+  let _composeAccountCount = 0;
+  const composePicker = _makeSenderPicker(
+    composeSenderSelect,
+    document.getElementById('compose-alias-row'),
+    composeAliasInput,
+    document.getElementById('compose-alias-error'));
+  // Settles once "Send as" is filled (see _fillComposeSender).
+  let _composeSenderReady = Promise.resolve();
+  let _composeSenderToken = 0;
+  // The sender a restored draft had: every fill of "Send as" brings it back,
+  // so a fill that lands after the restore does not lose it.
+  let _composeSenderWant = '';
   const btnCloseCompose = document.getElementById('btn-close-compose');
   const btnComposeSend = document.getElementById('btn-compose-send');
   const btnToggleCc = document.getElementById('btn-toggle-cc');
@@ -5509,8 +5711,13 @@
 
   // Auto-save draft on input in compose/reply fields
   [composeSubject, composeBody, composeTo, composeCc, composeBcc,
-   replyText, replyBody, forwardToInput, replyCcInput, replyBccInput].forEach(el => {
+   replyText, replyBody, forwardToInput, replyCcInput, replyBccInput,
+   replyAliasInput, composeAliasInput].forEach(el => {
     el.addEventListener('input', _scheduleDraftSave);
+  });
+  // ...and when a sender is picked.
+  [replyFromSelect, composeSenderSelect].forEach(el => {
+    el.addEventListener('change', _scheduleDraftSave);
   });
 
   function openCompose(accountId) {
@@ -5524,6 +5731,8 @@
 
     // Populate "From" with accounts
     composeFrom.textContent = '';
+    _composeSenderWant = '';
+    _composeSenderReady = _fillComposeSender(null);
     browser.runtime.sendMessage({ type: 'GET_ACCOUNTS' }).then(accounts => {
       for (const acc of accounts) {
         const opt = document.createElement('option');
@@ -5532,12 +5741,53 @@
         if (acc.id === accountId) opt.selected = true;
         composeFrom.appendChild(opt);
       }
+      _composeAccountCount = accounts.length;
+      _composeSenderReady = _fillComposeSender(composeFrom.value || accountId);
       _refreshComposeScribe();
     });
 
     composePanel.classList.remove('hidden');
     composeTo.focus();
     _refreshComposeScribe();
+  }
+
+  /**
+   * Fill "Send as" with the addresses of the account chosen in From, the
+   * primary one selected: the address a new mail went out from before there
+   * was a choice. A later call wins over one still waiting for its answer.
+   */
+  async function _fillComposeSender(accountId) {
+    const token = ++_composeSenderToken;
+    composePicker.clear();
+    composeSenderRow.classList.add('hidden');
+    _syncComposeFromRows();
+    if (!accountId) return;
+    let addresses;
+    try {
+      addresses = await browser.runtime.sendMessage({ type: 'GET_ADDRESSES', accountId });
+    } catch (_) {
+      return; // the mail goes out from the account's default address
+    }
+    if (token !== _composeSenderToken || !Array.isArray(addresses) || addresses.length === 0) return;
+    const primary = addresses.reduce((best, a) =>
+      (a.Order != null && (best.Order == null || a.Order < best.Order)) ? a : best, addresses[0]);
+    composePicker.fill(addresses, { preferred: primary.Email });
+    if (_composeSenderWant) composePicker.setValue(_composeSenderWant);
+    composeSenderRow.classList.remove('hidden');
+    _syncComposeFromRows();
+  }
+
+  /**
+   * With one account its addresses take the From row, labelled "From", as
+   * in a reply, and the account select is not shown. With several, From
+   * picks the account and "Send as" its address. While the addresses load,
+   * or when they cannot be loaded, the account select stays.
+   */
+  function _syncComposeFromRows() {
+    const single = _composeAccountCount <= 1;
+    const addressesShown = !composeSenderRow.classList.contains('hidden');
+    composeFromRow.classList.toggle('hidden', single && addressesShown);
+    composeSenderLabel.textContent = ProtonI18n.t(single ? 'from' : 'sendAs');
   }
 
   function closeCompose() {
@@ -5676,7 +5926,12 @@
       accountId: _selectedMsg && _selectedMsg._accountId,
       isHtml,
       recipient: (_selectedMsg && _selectedMsg.Sender && (_selectedMsg.Sender.Name || _selectedMsg.Sender.Address)) || '',
-      sender: _senderNameFromSelect(replyFromSelect),
+      // Read when a request goes out: the sender can change, or a +alias be
+      // typed, after this was built. "Other +alias…" is no name.
+      get sender() {
+        return replyPicker.senderName()
+          || (replyFromSelect.value === OTHER_ALIAS ? '' : _senderNameFromSelect(replyFromSelect));
+      },
       locale: _settings.language || 'en',
       getText: () => (isHtml ? (editor.innerText || editor.textContent || '') : editor.value),
       replace: (text) => { if (isHtml) _setHTML(replyBody, _plainToHtml(text)); else replyText.value = text; },
@@ -5695,7 +5950,11 @@
       accountId: composeFrom.value || _composeAccountId,
       isHtml,
       recipient: toChip ? (toChip.name || toChip.address) : '',
-      sender: _senderNameFromSelect(composeFrom),
+      // Read when a request goes out, as for a reply: the account or "Send
+      // as" can change after this was built.
+      get sender() {
+        return composePicker.senderName() || (composePicker.hasAddresses() ? '' : _senderNameFromSelect(composeFrom));
+      },
       locale: _settings.language || 'en',
       getText: () => (composeBody.innerText || composeBody.textContent || ''),
       replace: (text) => { if (isHtml) _setHTML(composeBody, _plainToHtml(text)); else composeBody.textContent = text; },
@@ -5718,6 +5977,14 @@
   }
   replyFromSelect.addEventListener('change', _refreshReplyScribe);
   composeFrom.addEventListener('change', _refreshComposeScribe);
+  composeFrom.addEventListener('change', () => {
+    // Another account: a restored draft's sender was one of the first's.
+    _composeSenderWant = '';
+    _composeSenderReady = _fillComposeSender(composeFrom.value);
+  });
+  // A sender the user picks or types themselves is not to be undone by a fill.
+  composeSenderSelect.addEventListener('change', () => { _composeSenderWant = ''; });
+  composeAliasInput.addEventListener('input', () => { _composeSenderWant = ''; });
 
   // Spellcheck language switcher: per-session override (doesn't change saved default)
   for (const sel of document.querySelectorAll('.spellcheck-lang-select')) {
@@ -5790,7 +6057,8 @@
   document.getElementById('btn-compose-attach').addEventListener('click', _openFilePicker);
   document.getElementById('btn-reply-attach').addEventListener('click', _openFilePicker);
 
-  btnComposeSend.addEventListener('click', async () => {
+  // Named, like handleSendReply, so its sender wiring can be tested.
+  async function handleSendCompose() {
     const accountId = composeFrom.value || _composeAccountId;
     // An address typed but not yet turned into a chip is still a recipient the
     // user believes they addressed. A chip is only committed on Enter/Tab/comma
@@ -5801,6 +6069,8 @@
     const toList = chipTo.getChips();
     if (toList.length === 0) { showToast(ProtonI18n.t('pleaseEnterRecipient')); return; }
     if (_blockOnInvalidRecipient(chipTo, chipCc, chipBcc)) return;
+    // A typed +alias: Pro, and one of an own address.
+    if (!composePicker.validate()) return;
 
     btnComposeSend.textContent = ProtonI18n.t('sending');
     btnComposeSend.disabled = true;
@@ -5812,6 +6082,10 @@
         cc: chipCc.getChips(),
         bcc: chipBcc.getChips(),
         subject: composeSubject.value,
+        // Before the addresses load (or when they cannot), the sender a
+        // restored draft had, which the background checks is the account's;
+        // empty: the account's default address.
+        senderAddress: composePicker.value() || _composeSenderWant,
       };
       if (composeHtml) {
         params.htmlBody = composeBody.innerHTML;
@@ -5848,7 +6122,8 @@
       // URI is dropped by Gmail and Outlook.
       if (composeHtml) {
         const fromOpt = composeFrom.selectedOptions && composeFrom.selectedOptions[0];
-        const inlined = _inlineDataUrlImages(params.htmlBody, (fromOpt && fromOpt.textContent) || '');
+        const inlined = _inlineDataUrlImages(params.htmlBody,
+          params.senderAddress || (fromOpt && fromOpt.textContent) || '');
         if (inlined.attachments.length) {
           params.htmlBody = inlined.html;
           params.attachments = (params.attachments || []).concat(inlined.attachments);
@@ -5876,7 +6151,8 @@
       btnComposeSend.textContent = ProtonI18n.t('send');
       btnComposeSend.disabled = false;
     }
-  });
+  }
+  btnComposeSend.addEventListener('click', handleSendCompose);
 
   // --- SVG Icons ---
 
@@ -6985,8 +7261,10 @@
   }
 
   document.addEventListener('keydown', async (e) => {
-    // Don't handle shortcuts when typing in inputs or contentEditable
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) {
+    // Don't handle shortcuts when typing in inputs or contentEditable, or on
+    // a select, where a typed letter picks an option (the From address).
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT'
+      || e.target.isContentEditable) {
       if (e.key === 'Escape') e.target.blur();
       return;
     }

@@ -112,3 +112,11 @@ src/crypto/cipher/blowfish.js: "Originally written by nklein software
 - Copyright (c) 2013-2023 Cole Bemis
 - License: MIT (lib/licenses/MIT.txt)
 - Source: https://github.com/feathericons/feather
+
+## Unicode CLDR (Windows time zone mapping)
+
+- File: background/calendar-tz-data.js, generated from common/supplemental/windowsZones.xml
+  by scripts/build-windows-zones.js
+- Copyright (c) Unicode, Inc.
+- License: Unicode License V3 (lib/licenses/Unicode-3.0.txt)
+- Source: https://github.com/unicode-org/cldr

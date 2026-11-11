@@ -371,8 +371,9 @@ describe('the invite card refuses .ics attachments that came back undecrypted', 
       },
       tabs: { create() {} },
     };
-    PopupCalendar = new Function('browser', 'ProtonI18n', 'ProtonBinary', 'window',
-      CALENDAR + '\nreturn PopupCalendar;')(browserShim, i18n, ProtonBinary, globalThis.window);
+    const ProtonSenderAlias = new Function(readFileSync(join(ROOT, 'lib', 'sender-alias.js'), 'utf-8') + '\nreturn ProtonSenderAlias;')();
+    PopupCalendar = new Function('browser', 'ProtonI18n', 'ProtonBinary', 'window', 'ProtonSenderAlias',
+      CALENDAR + '\nreturn PopupCalendar;')(browserShim, i18n, ProtonBinary, globalThis.window, ProtonSenderAlias);
   });
 
   function icsAtt(id, name, keyPackets) {

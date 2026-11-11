@@ -132,7 +132,7 @@ const PopupCalendar = (() => {
    */
   function _personEmail(value) {
     const v = String(value || '').trim();
-    return (((v.match(/^mailto:(.+)$/i) || [])[1]) || v).trim();
+    return (((v.match(/^mailto:([\s\S]+)$/i) || [])[1]) || v).trim();
   }
 
   /**
@@ -146,10 +146,16 @@ const PopupCalendar = (() => {
     const unfolded = text.replace(/\r\n[ \t]/g, '').replace(/\n[ \t]/g, '');
     const lines = unfolded.split(/\r\n|\n/);
 
-    let method = null, inEvent = false;
+    // The first VEVENT is the event, as the background parser and Proton's
+    // Mail app read a file (a series sent with its edited occurrences, or a
+    // file of several events): the card must show, and answer, that one.
+    let method = null, inEvent = false, nested = 0, firstDone = false;
     let uid = '', summary = '', location = '';
     let dtstartRaw = '', dtendRaw = '', dtstampRaw = '';
     let sequence = '', recurrenceIdRaw = '';
+    // The series' rule as written (the first RRULE, as Proton keeps one), and
+    // whether extra dates make it a series without one: for the card's line.
+    let rrule = '', hasRdate = false;
     let organizerName = '', organizerEmail = '';
     const attendees = [];
 
@@ -168,9 +174,24 @@ const PopupCalendar = (() => {
       const value = parsed.value;
 
       if (prop === 'METHOD') method = value.trim();
-      if (prop === 'BEGIN' && value.trim().toUpperCase() === 'VEVENT') inEvent = true;
-      if (prop === 'END' && value.trim().toUpperCase() === 'VEVENT') inEvent = false;
-      if (!inEvent) continue;
+      // Only the VEVENT's own lines are the event's. A component inside it
+      // (VALARM: Google's e-mail reminder carries "SUMMARY:Alarm
+      // notification" and an ATTENDEE) is skipped, as the background parser
+      // skips it: the card must show, and answer, the event the answer saves.
+      // BEGIN and END count only with a component name: an unfolded
+      // description line such as "Begin: 10:00 coffee" is text.
+      const boundary = (prop === 'BEGIN' || prop === 'END') && /^[A-Za-z][A-Za-z0-9-]*$/.test(value.trim());
+      if (boundary && prop === 'BEGIN') {
+        if (inEvent) nested++;
+        else if (!firstDone && value.trim().toUpperCase() === 'VEVENT') { inEvent = true; nested = 0; }
+        continue;
+      }
+      if (boundary && prop === 'END') {
+        if (inEvent && nested > 0) nested--;
+        else if (inEvent && value.trim().toUpperCase() === 'VEVENT') { inEvent = false; firstDone = true; }
+        continue;
+      }
+      if (!inEvent || nested > 0) continue;
 
       if (prop === 'UID') uid = value.trim();
       else if (prop === 'SUMMARY') summary = value.trim();
@@ -183,6 +204,8 @@ const PopupCalendar = (() => {
       // of a recurring event (WebClients keeps both in propertiesToKeep).
       else if (prop === 'SEQUENCE') sequence = value.trim();
       else if (prop === 'RECURRENCE-ID') recurrenceIdRaw = line;
+      else if (prop === 'RRULE') { if (!rrule) rrule = value.trim(); }
+      else if (prop === 'RDATE') hasRdate = true;
       // The name comes from the PARSED CN parameter and the address from the
       // property VALUE. Both were regex scans of the whole line, so any
       // earlier parameter could supply either one: X-LABEL="CN=spoofed" won
@@ -202,7 +225,9 @@ const PopupCalendar = (() => {
     }
 
     const m = method ? method.toUpperCase() : '';
-    if (!m || !uid || !summary) return null;
+    // An event without a title still gets its card ("(no title)", as in
+    // Proton's own widget): it can be answered all the same.
+    if (!m || !uid) return null;
 
     function parseICSDate(raw) {
       if (!raw) return { date: null, tz: null, rawProp: raw };
@@ -227,10 +252,189 @@ const PopupCalendar = (() => {
       dtstart: start.date, dtend: end.date,
       timezone: start.tz, allDay: start.allDay,
       dtstartRaw, dtendRaw, dtstampRaw,
-      sequence, recurrenceIdRaw,
+      sequence, recurrenceIdRaw, rrule, hasRdate,
       organizer: { name: organizerName || organizerEmail, email: organizerEmail },
       attendees,
     };
+  }
+
+  // RFC 5545 weekday codes in the order the card lists them (Monday first),
+  // each with its Date#getDay() number.
+  const RRULE_WEEKDAYS = [['MO', 1], ['TU', 2], ['WE', 3], ['TH', 4], ['FR', 5], ['SA', 6], ['SU', 0]];
+  // "second Tuesday": a whole phrase per position and weekday, because in
+  // many of the card's languages the ordinal agrees with the weekday.
+  const RRULE_NTH_KEYS = { 1: 'recurNth1', 2: 'recurNth2', 3: 'recurNth3', 4: 'recurNth4', '-1': 'recurNthLast' };
+
+  /** The locale Intl formats weekday and month names in: the UI language
+   *  (Serbian is shown in Latin script, Intl's default for "sr" is Cyrillic). */
+  function _intlLocale() {
+    const lang = (ProtonI18n.getLanguage && ProtonI18n.getLanguage()) || 'en';
+    return lang === 'sr' ? 'sr-Latn' : lang;
+  }
+
+  function _rruleParts(value) {
+    const parts = {};
+    for (const p of String(value || '').split(';')) {
+      const i = p.indexOf('=');
+      if (i > 0) parts[p.slice(0, i).trim().toUpperCase()] = p.slice(i + 1).trim().toUpperCase();
+    }
+    return parts;
+  }
+
+  function _rruleList(value) {
+    return value ? value.split(',').map((x) => x.trim()).filter(Boolean) : [];
+  }
+
+  /** "Tuesday and Thursday" / "Mon, Tue, Wed, Thu and Fri", in the UI language. */
+  function _weekdayNames(codes) {
+    const loc = _intlLocale();
+    const days = RRULE_WEEKDAYS.filter(([c]) => codes.includes(c));
+    const opts = { weekday: days.length > 2 ? 'short' : 'long' };
+    let fmt;
+    try { fmt = new Intl.DateTimeFormat(loc, opts); } catch (_) { fmt = new Intl.DateTimeFormat(undefined, opts); }
+    // 5 January 2026 was a Monday: 4 + getDay() is that week's day, Sunday the 11th.
+    const names = days.map(([, js]) => fmt.format(new Date(2026, 0, 4 + (js === 0 ? 7 : js))));
+    try {
+      return new Intl.ListFormat(loc, { style: 'long', type: 'conjunction' }).format(names);
+    } catch (_) {
+      return names.join(', ');
+    }
+  }
+
+  /** A zone Intl can format in, for an event's TZID: the name itself when
+   *  Intl knows it, else the IANA zone it maps to (Outlook's Windows names,
+   *  renamed zones: ProtonCalendarTZ), else null. */
+  function _intlZone(tzid) {
+    const name = String(tzid || '').trim().replace(/^"(.*)"$/, '$1');
+    if (!name) return null;
+    const known = (z) => { try { new Intl.DateTimeFormat('en', { timeZone: z }); return true; } catch (_) { return false; } };
+    if (known(name)) return name;
+    const mapped = typeof ProtonCalendarTZ !== 'undefined' ? ProtonCalendarTZ.resolve(name, null) : null;
+    return mapped && known(mapped) ? mapped : null;
+  }
+
+  /** The last day of a series (RRULE UNTIL), read as Proton's widget reads
+   *  it (getUntilDate): an all-day series or a date as written; a UTC time
+   *  in the organizer's zone for a zoned start (Google and Proton write the
+   *  end of the last day there, Outlook the start of the last occurrence),
+   *  in UTC for a UTC start; a floating time as written. '' when it cannot
+   *  be placed. */
+  function _rruleUntilText(value, event) {
+    const m = String(value || '').match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z)?)?$/);
+    if (!m) return '';
+    const [y, mo, d, h, mi, s] = [m[1], m[2], m[3], m[4] || 0, m[5] || 0, m[6] || 0].map(Number);
+    const loc = _intlLocale();
+    const format = (date, extra) => {
+      const opts = { day: 'numeric', month: 'short', year: 'numeric', ...extra };
+      try { return date.toLocaleDateString(loc, opts); } catch (_) { return date.toLocaleDateString(undefined, opts); }
+    };
+    const asWritten = new Date(y, mo - 1, d, h, mi, s);
+    if (isNaN(asWritten) || asWritten.getMonth() !== mo - 1 || asWritten.getDate() !== d) return '';
+    if (!m[4] || event.allDay || !m[7]) return format(asWritten);
+    const instant = new Date(Date.UTC(y, mo - 1, d, h, mi, s));
+    if (!event.timezone) return format(instant, { timeZone: 'UTC' });
+    // A zone Intl cannot place: no end date rather than perhaps the wrong day.
+    const zone = _intlZone(event.timezone);
+    return zone ? format(instant, { timeZone: zone }) : '';
+  }
+
+  /** What a rule repeats on: '' when its frequency says it all, null when it
+   *  is beyond what the card describes (shown as "custom rule"). */
+  function _recurrenceDetail(freq, r, start) {
+    if (['BYYEARDAY', 'BYWEEKNO', 'BYHOUR', 'BYMINUTE', 'BYSECOND'].some((k) => r[k] !== undefined)) return null;
+    const days = [];
+    for (const d of _rruleList(r.BYDAY)) {
+      const m = d.match(/^([+-]?\d{1,2})?(MO|TU|WE|TH|FR|SA|SU)$/);
+      if (!m) return null;
+      days.push({ n: m[1] ? parseInt(m[1], 10) : 0, code: m[2] });
+    }
+    const monthDays = _rruleList(r.BYMONTHDAY);
+    const months = _rruleList(r.BYMONTH);
+    const setPos = _rruleList(r.BYSETPOS);
+    if (freq === 'DAILY' || freq === 'WEEKLY') {
+      if (monthDays.length || months.length || setPos.length || days.some((d) => d.n)) return null;
+      const codes = days.length ? days.map((d) => d.code)
+        : (freq === 'WEEKLY' && start ? [RRULE_WEEKDAYS.find(([, js]) => js === start.getDay())[0]] : []);
+      return codes.length ? _weekdayNames(codes) : '';
+    }
+    if (freq === 'MONTHLY') {
+      if (months.length) return null;
+      if (days.length) {
+        // One weekday, at one position: 2TU, -1FR, or TU with BYSETPOS=2.
+        if (days.length > 1 || monthDays.length || setPos.length > 1 || (days[0].n && setPos.length)) return null;
+        const key = RRULE_NTH_KEYS[days[0].n || (setPos.length ? parseInt(setPos[0], 10) : 0)];
+        return key ? ProtonI18n.t(key + days[0].code[0] + days[0].code[1].toLowerCase()) : null;
+      }
+      if (setPos.length || monthDays.length > 1) return null;
+      const day = monthDays.length ? parseInt(monthDays[0], 10) : (start ? start.getDate() : NaN);
+      if (day === -1) return ProtonI18n.t('recurLastMonthDay');
+      return day >= 1 && day <= 31 ? ProtonI18n.t('recurMonthDay', day) : null;
+    }
+    if (freq === 'YEARLY') {
+      // A day of the month without a month repeats in every month (RFC 5545).
+      if (days.length || setPos.length || monthDays.length > 1 || months.length > 1
+        || (monthDays.length && !months.length)) return null;
+      const month = months.length ? parseInt(months[0], 10) : (start ? start.getMonth() + 1 : NaN);
+      const day = monthDays.length ? parseInt(monthDays[0], 10) : (start ? start.getDate() : NaN);
+      if (!(month >= 1 && month <= 12 && day >= 1 && day <= 31)) return null;
+      // 2000 was a leap year: 29 February is a date.
+      const date = new Date(2000, month - 1, day);
+      if (date.getMonth() !== month - 1) return null;
+      try {
+        return date.toLocaleDateString(_intlLocale(), { day: 'numeric', month: 'long' });
+      } catch (_) {
+        return date.toLocaleDateString(undefined, { day: 'numeric', month: 'long' });
+      }
+    }
+    return null;
+  }
+
+  /**
+   * How an invitation repeats, for the card's line: "Weekly: Tuesday,
+   * 3 times", "Monthly: second Tuesday, until 29 Dec 2026", "One occurrence
+   * of a recurring event". '' for an event that does not repeat. Proton's
+   * own widget shows the same: a rule it cannot put into words is a
+   * "custom" one, never a guess.
+   *
+   * @param {object} event - Parsed event from parseICS().
+   * @returns {string}
+   */
+  function describeRecurrence(event) {
+    if (!event) return '';
+    // One occurrence of a series: the answer is for that one only.
+    if (event.recurrenceIdRaw) return ProtonI18n.t('recurOccurrence');
+    if (!event.rrule) return event.hasRdate ? ProtonI18n.t('recurRepeats') : '';
+    const r = _rruleParts(event.rrule);
+    const interval = /^\d+$/.test(r.INTERVAL || '') ? Math.max(1, parseInt(r.INTERVAL, 10)) : 1;
+    const base = {
+      DAILY: interval > 1 ? ProtonI18n.plural('recurEveryDays', interval) : ProtonI18n.t('recurDaily'),
+      WEEKLY: interval > 1 ? ProtonI18n.plural('recurEveryWeeks', interval) : ProtonI18n.t('recurWeekly'),
+      MONTHLY: interval > 1 ? ProtonI18n.plural('recurEveryMonths', interval) : ProtonI18n.t('recurMonthly'),
+      YEARLY: interval > 1 ? ProtonI18n.plural('recurEveryYears', interval) : ProtonI18n.t('recurYearly'),
+    }[r.FREQ];
+    // Hourly and finer, or no frequency at all: a series all the same.
+    if (!base) return ProtonI18n.t('recurRepeats');
+    const start = event.dtstart instanceof Date && !isNaN(event.dtstart) ? event.dtstart : null;
+    let text;
+    const weekdaysOnly = ['MO', 'TU', 'WE', 'TH', 'FR'];
+    const byday = _rruleList(r.BYDAY);
+    if (interval === 1 && (r.FREQ === 'DAILY' || r.FREQ === 'WEEKLY') && byday.length === 5
+      && weekdaysOnly.every((d) => byday.includes(d))
+      && !['BYMONTH', 'BYMONTHDAY', 'BYSETPOS', 'BYYEARDAY', 'BYWEEKNO', 'BYHOUR', 'BYMINUTE', 'BYSECOND'].some((k) => r[k] !== undefined)) {
+      text = ProtonI18n.t('recurWeekdays');
+    } else {
+      const detail = _recurrenceDetail(r.FREQ, r, start);
+      text = detail === null ? ProtonI18n.t('recurDetail', base, ProtonI18n.t('recurCustom'))
+        : (detail ? ProtonI18n.t('recurDetail', base, detail) : base);
+    }
+    let end = '';
+    if (/^\d+$/.test(r.COUNT || '') && parseInt(r.COUNT, 10) > 0) {
+      end = ProtonI18n.plural('recurTimes', parseInt(r.COUNT, 10));
+    } else if (r.UNTIL) {
+      const day = _rruleUntilText(r.UNTIL, event);
+      if (day) end = ProtonI18n.t('recurUntil', day);
+    }
+    return end ? ProtonI18n.t('recurEnd', text, end) : text;
   }
 
   /**
@@ -310,7 +514,7 @@ const PopupCalendar = (() => {
   function _icsParamValue(v) {
     const s = String(v || '')
       .replace(/\^/g, '^^')
-      .replace(/\r?\n/g, '^n')
+      .replace(/\r\n?|\n/g, '^n') // a bare CR too: some readers end a line there
       .replace(/"/g, "^'");
     return /[;:,]/.test(s) ? '"' + s + '"' : s;
   }
@@ -363,7 +567,9 @@ const PopupCalendar = (() => {
       'END:VEVENT',
       'END:VCALENDAR',
     );
-    return lines.join('\r\n');
+    // The values come from the mail: a bare CR in one (the parser splits on
+    // CRLF and LF only) would end the line early for some readers.
+    return lines.map((l) => l.replace(/\r/g, '')).join('\r\n');
   }
 
   // Proton attendee Status codes -> display. 0=pending 1=tentative 2=declined 3=accepted.
@@ -430,7 +636,8 @@ const PopupCalendar = (() => {
    * @param {string} accountId
    * @param {Array} attEntries - Attendee DOM entries with { badge, token, email, _status }.
    * @param {HTMLElement} attText - Attendee count text element.
-   * @param {HTMLElement} buttonsEl - Buttons container (disabled if event not found).
+   * @param {HTMLElement} buttonsEl - Buttons container (unused since the
+   *   buttons stay usable for an invitation that is not in the calendar).
    * @param {HTMLElement} statusEl - Status text element.
    * @param {object} [selfChoice] - { email, status }: the status the user JUST chose;
    *   prevents our own row being downgraded to "pending" by a read-after-write
@@ -441,13 +648,26 @@ const PopupCalendar = (() => {
       type: 'GET_CALENDAR_ATTENDEES', accountId, eventUID: event.uid,
       recurrenceId: event.recurrenceIdRaw || '',
     }).then(result => {
+      // The lookup made on opening came back after an answer on this card:
+      // that answer's own refresh (with selfChoice) paints the card.
+      if (!selfChoice && statusEl && statusEl._answered) return;
       if (result && result.notFound) {
-        if (statusEl) {
-          statusEl.textContent = ProtonI18n.t('eventNotInCalendar');
-          statusEl.style.color = '#ffaa00';
-        }
-        if (buttonsEl) {
-          buttonsEl.querySelectorAll('.calendar-invite-btn').forEach(b => { b.disabled = true; });
+        // Not in the calendar: Proton's server adds only the invitations it
+        // can read (when the user's "Add to calendar and mark as pending" is
+        // on), and a deleted event looks the same. Proton's Mail app keeps
+        // Yes/Maybe/No usable then and adds the event when the user answers,
+        // and so does the card. Never over an answer: right after one the
+        // calendar can lag behind the write that just happened, and a click
+        // can beat this lookup ("Sending response..." is already showing).
+        // Only where it is true: the background, which saves the copy, says
+        // whether it can (statusEl._addsOnAnswer, set by the card).
+        if (statusEl && !selfChoice && typeof statusEl._addsOnAnswer === 'function') {
+          statusEl._addsOnAnswer().then((adds) => {
+            if (adds && !statusEl.textContent) {
+              statusEl.textContent = ProtonI18n.t('eventNotInCalendarYet');
+              statusEl._promisedAdd = true;
+            }
+          });
         }
         return;
       }
@@ -466,9 +686,11 @@ const PopupCalendar = (() => {
           || (aeEmail && result.attendees.find(ra => _baseEmail(ra.Email || '') === _baseEmail(aeEmail)))
           || null;
         let status = match ? match.Status : ae._status;
-        // Never downgrade our own freshly-chosen status: a GET issued moments
-        // after the PUT can still report 0/pending (read-after-write lag).
-        if (selfChoice && _isSelfRow(ae, selfChoice.email) && (status === 0 || status === undefined)) {
+        // Our own row shows the answer just given: a GET issued moments after
+        // the PUT can still report the one before (read-after-write lag),
+        // pending or, now that the answer can be changed on the same card,
+        // the previous answer.
+        if (selfChoice && _isSelfRow(ae, selfChoice.email)) {
           status = selfChoice.status;
         }
         if (status !== undefined) _paintRow(ae, status);
@@ -482,7 +704,8 @@ const PopupCalendar = (() => {
    *
    * @param {object} event - Parsed event from parseICS().
    * @param {string} accountId
-   * @param {string} rawIcs - Raw ICS text (unused currently, kept for future use).
+   * @param {string} rawIcs - Raw ICS text: the "Add to calendar" button imports
+   *   it, and an answer to an invitation that is not in the calendar adds it.
    * @param {object} ctx - Context from popup.js:
    * @param {HTMLElement} ctx.containerEl - Calendar invite DOM container.
    * @param {Function} ctx.getSelectedMsg - Returns the currently selected message.
@@ -514,7 +737,7 @@ const PopupCalendar = (() => {
     const title = document.createElement('span');
     title.className = 'calendar-invite-title';
     // Unescape for display only: event.summary stays escaped for the REPLY.
-    title.textContent = _unescapeText(event.summary);
+    title.textContent = _unescapeText(event.summary) || ProtonI18n.t('eventUntitled');
     header.append(icon, title);
 
     // Details
@@ -544,6 +767,18 @@ const PopupCalendar = (() => {
       dateText.textContent = dateStr;
       dateRow.appendChild(dateText);
       details.appendChild(dateRow);
+    }
+
+    // Recurrence: how a series repeats, or that this is one occurrence of one.
+    const recurrence = describeRecurrence(event);
+    if (recurrence) {
+      const recRow = document.createElement('div');
+      recRow.className = 'calendar-invite-detail calendar-invite-recurrence';
+      recRow.innerHTML = '<span class="calendar-invite-detail-icon">🔁</span>';
+      const recText = document.createElement('span');
+      recText.textContent = recurrence;
+      recRow.appendChild(recText);
+      details.appendChild(recRow);
     }
 
     // Organizer
@@ -787,9 +1022,11 @@ const PopupCalendar = (() => {
     // the live-status pre-select below.
     const myAttPromise = (async () => {
       let ownedEmails = [];
+      let ownedAddrs = [];
       try {
         const addrs = await browser.runtime.sendMessage({ type: 'GET_ADDRESSES', accountId });
-        ownedEmails = (addrs || []).map(a => (a.Email || '').toLowerCase());
+        ownedAddrs = Array.isArray(addrs) ? addrs : [];
+        ownedEmails = ownedAddrs.map(a => (a.Email || '').toLowerCase());
       } catch (e) { /* fall back to the account's primary email below */ }
       const acctEmail = ((getSelectedMsg() && getSelectedMsg()._accountEmail) || '').toLowerCase();
       const owned = acctEmail ? ownedEmails.concat([acctEmail]) : ownedEmails;
@@ -801,13 +1038,18 @@ const PopupCalendar = (() => {
         || event.attendees.find(a => owned.some(o => _baseEmail(o) === _baseEmail(a.email)))
         || null;
       if (!att) return null;
-      // The RSVP must be SENT from a real owned address: a +alias isn't
-      // sendable ("Invalid sender"). Use an exact owned address, else the owned
-      // one sharing the attendee's base local-part, else the attendee email.
+      // The RSVP goes out from the address the invitation was sent to, as
+      // Proton's own Calendar answers: an exact owned address, else a +alias
+      // of one that can carry it (lib/sender-alias.js; the API accepts a
+      // +alias as the sender), else the owned address sharing the attendee's
+      // base local part, else the attendee email.
       const lower = att.email.toLowerCase();
+      const alias = ProtonSenderAlias.resolve(att.email, ownedAddrs);
       const sendFrom = owned.includes(lower)
         ? lower
-        : (owned.find(o => _baseEmail(o) === _baseEmail(lower)) || lower);
+        : (alias.ok && alias.alias
+          ? alias.email
+          : (owned.find(o => _baseEmail(o) === _baseEmail(lower)) || lower));
       return { att, sendFrom };
     })();
 
@@ -819,27 +1061,75 @@ const PopupCalendar = (() => {
 
     const statusEl = document.createElement('div');
     statusEl.className = 'calendar-invite-status';
+    // Whether answering adds this invitation when it is not in the calendar.
+    // The background decides, with the same checks it runs before it saves
+    // (one event, the user invited and not organizing, every time zone one
+    // the API accepts): asked once, and only when the lookup found nothing.
+    let addsOnAnswer = null;
+    statusEl._addsOnAnswer = () => (addsOnAnswer = addsOnAnswer || myAttPromise.then((resolved) => (!resolved ? false
+      : browser.runtime.sendMessage({
+        type: 'CHECK_INVITE_SAVABLE', accountId, eventUID: event.uid,
+        recurrenceId: event.recurrenceIdRaw || '', attendeeEmail: resolved.att.email, inviteIcs: rawIcs || '',
+        // What this card shows, as the answer will send it: the background
+        // saves only an event that matches it.
+        replyIcs: buildRsvpICS(event, resolved.att.email, 'ACCEPTED') || '', shownLocation: event.location || '',
+      }).then((r) => !!(r && r.savable), () => false)), () => false));
 
     const allBtns = [];
+    // The answer the card stands for: the one in the calendar (the pre-select
+    // below) or the last one sent from here. As in Proton's Mail app, the
+    // buttons are blocked only while an answer is on its way; afterwards the
+    // other two change it, and the current one is not sent again.
+    let current = null;
+    let sending = false;
+    // The answer the calendar holds, kept even when the lookup came back
+    // during a first answer from this card, and whether one was sent here.
+    let stored = null;
+    let answeredHere = false;
+    const paint = (partstat) => {
+      for (const { btn, bd } of allBtns) {
+        const on = bd.partstat === partstat;
+        btn.classList.remove('accepted', 'tentative', 'declined');
+        if (on) btn.classList.add(bd.cls);
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      }
+    };
+    const setEnabled = (on) => { for (const { btn } of allBtns) btn.disabled = !on; };
+    // Back to the answer the card stood for before: the send did not happen.
+    // Nothing sent from here yet: that is the calendar's answer, and a lookup
+    // still on its way may paint it again.
+    const failed = () => {
+      sending = false;
+      if (!answeredHere) {
+        current = stored;
+        statusEl._answered = false;
+      }
+      paint(current);
+      setEnabled(true);
+      statusEl.textContent = ProtonI18n.t('rsvpFailed');
+    };
     for (const bd of btnData) {
       const btn = document.createElement('button');
       btn.className = 'calendar-invite-btn';
       btn.textContent = bd.label;
+      btn.setAttribute('aria-pressed', 'false');
       allBtns.push({ btn, bd });
 
       btn.addEventListener('click', async () => {
-        buttons.querySelectorAll('.calendar-invite-btn').forEach(b => {
-          b.disabled = true;
-          b.classList.remove('accepted', 'tentative', 'declined');
-        });
-        btn.classList.add(bd.cls);
+        if (sending || bd.partstat === current) return;
+        sending = true;
+        // From here on this card shows its own answer: a lookup started on
+        // opening (which can wait for an earlier answer still on its way)
+        // must not paint a stale one over it.
+        statusEl._answered = true;
+        setEnabled(false);
+        paint(bd.partstat);
         statusEl.textContent = ProtonI18n.t('rsvpSending');
 
         const resolved = await myAttPromise;
         if (!resolved) {
           // None of this account's addresses is an attendee: can't RSVP as it.
-          statusEl.textContent = ProtonI18n.t('rsvpFailed');
-          buttons.querySelectorAll('.calendar-invite-btn').forEach(b => b.disabled = false);
+          failed();
           return;
         }
         const myAtt = resolved.att;
@@ -851,8 +1141,7 @@ const PopupCalendar = (() => {
         if (!icsReply) {
           // Invite had no usable DTSTART: a fabricated reply would be
           // rejected/mismatched by the organizer's server.
-          statusEl.textContent = ProtonI18n.t('rsvpFailed');
-          buttons.querySelectorAll('.calendar-invite-btn').forEach(b => b.disabled = false);
+          failed();
           return;
         }
         // The ICS attachment keeps SUMMARY escaped (buildRsvpICS re-emits it
@@ -860,7 +1149,7 @@ const PopupCalendar = (() => {
         // "Lunch\, then demo", so unescape a display copy here. Newlines are
         // flattened: "\n" in SUMMARY would otherwise put a line break into a
         // mail subject.
-        const summaryText = (_unescapeText(event.summary) || '').replace(/[\r\n]+/g, ' ');
+        const summaryText = (_unescapeText(event.summary) || ProtonI18n.t('eventUntitled')).replace(/[\r\n]+/g, ' ');
         const actionKey = bd.partstat === 'ACCEPTED' ? 'hasAccepted'
           : bd.partstat === 'TENTATIVE' ? 'hasTentativelyAccepted' : 'hasDeclined';
         // Escaped because this string becomes the HTML body of an outgoing
@@ -887,11 +1176,36 @@ const PopupCalendar = (() => {
             recurrenceId: event.recurrenceIdRaw || '',
             attendeeToken: myAtt.pmToken || '',
             partstat: bd.partstat,
+            // The invitation itself, so that answering one that is not in the
+            // calendar yet adds it there.
+            inviteIcs: rawIcs || '',
+            // The card said "your answer adds it": if the calendar cannot be
+            // checked afterwards, the background must not stay silent.
+            promisedAdd: statusEl._promisedAdd === true,
+            // The location the card showed: compared with what would be saved.
+            shownLocation: event.location || '',
           });
           if (result && result.error) throw new Error(result.error);
+          current = bd.partstat;
+          answeredHere = true;
+          sending = false;
           const confirmKey = bd.partstat === 'ACCEPTED' ? 'rsvpAccepted'
             : bd.partstat === 'TENTATIVE' ? 'rsvpTentative' : 'rsvpDeclined';
           statusEl.textContent = ProtonI18n.t(confirmKey);
+          if (result && result.calendar === 'notAdded') {
+            // The answer went out either way; say so on a line of its own
+            // when the calendar could not take the event, instead of
+            // implying it is there.
+            const note = document.createElement('div');
+            note.className = 'calendar-invite-status-note';
+            note.textContent = ProtonI18n.t('rsvpSentNotAdded');
+            statusEl.appendChild(note);
+          } else {
+            // In the calendar now: "your answer adds it" no longer stands.
+            statusEl._promisedAdd = false;
+          }
+          paint(current);
+          setEnabled(true);
           // Optimistically reflect OUR choice in the attendee list right away so
           // the user doesn't have to close + reopen the email to see it. We know
           // which row is ours (the resolved attendee's email); the server
@@ -903,8 +1217,7 @@ const PopupCalendar = (() => {
           refreshCalendarBadges(event, accountId, attEntries, attText, buttons, statusEl,
             { email: myAtt.email, status: bd.apiStatus });
         } catch (e) {
-          statusEl.textContent = ProtonI18n.t('rsvpFailed');
-          buttons.querySelectorAll('.calendar-invite-btn').forEach(b => b.disabled = false);
+          failed();
           showToast(ProtonI18n.t('rsvpFailed') + ': ' + e.message);
         }
       });
@@ -924,8 +1237,9 @@ const PopupCalendar = (() => {
         type: 'GET_CALENDAR_ATTENDEES', accountId, eventUID: event.uid,
         recurrenceId: event.recurrenceIdRaw || '',
       }).then(async result => {
-        if (!result || !result.attendees) return;
+        if (!result || !result.attendees || answeredHere) return;
         const resolved = await myAttPromise;
+        if (answeredHere) return;
         const myAtt = resolved && resolved.att;
         const myToken = myAtt ? myAtt.pmToken : '';
         const myEmail = ((myAtt && myAtt.email) || '').toLowerCase();
@@ -943,10 +1257,12 @@ const PopupCalendar = (() => {
         if (myCalAtt && myCalAtt.Status !== 0) {
           const statusToPartstat = { 3: 'ACCEPTED', 1: 'TENTATIVE', 2: 'DECLINED' };
           const ps = statusToPartstat[myCalAtt.Status];
-          if (ps) {
-            for (const { btn, bd } of allBtns) {
-              if (bd.partstat === ps) btn.classList.add(bd.cls);
-            }
+          // Kept either way; painted only when no answer from this card is
+          // on its way or made (a failed one hands the card back to it).
+          if (ps) stored = ps;
+          if (ps && !statusEl._answered) {
+            current = ps;
+            paint(ps);
             const confirmKey = ps === 'ACCEPTED' ? 'rsvpAccepted'
               : ps === 'TENTATIVE' ? 'rsvpTentative' : 'rsvpDeclined';
             statusEl.textContent = ProtonI18n.t(confirmKey);
@@ -1026,6 +1342,7 @@ const PopupCalendar = (() => {
   return {
     parseICS,
     buildRsvpICS,
+    describeRecurrence,
     detectCalendarInvite,
     renderCalendarInvite,
     refreshCalendarBadges,

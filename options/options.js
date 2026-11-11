@@ -21,6 +21,7 @@
   const senderDisplay = document.getElementById('sender-display');
   const previewLines = document.getElementById('preview-lines');
   const use24hTime = document.getElementById('use-24h-time');
+  const showRecipientAddresses = document.getElementById('show-recipient-addresses');
   const notificationsEnabled = document.getElementById('notifications-enabled');
   const notificationClickAction = document.getElementById('notification-click-action');
   const notificationSoundEnabled = document.getElementById('notification-sound-enabled');
@@ -345,6 +346,7 @@
     senderDisplay.value = s.senderDisplayFormat;
     previewLines.value = String(s.previewLines || 0);
     use24hTime.checked = s.use24HourTime;
+    showRecipientAddresses.checked = !!s.showRecipientAddresses;
     hidePremiumUI.checked = !!s.hidePremiumUI;
     cacheEnabledInput.checked = !!s.cacheEnabled;
     notificationsEnabled.checked = s.notificationsEnabled;
@@ -425,6 +427,7 @@
       senderDisplayFormat: senderDisplay.value,
       previewLines: parseInt(previewLines.value, 10),
       use24HourTime: use24hTime.checked,
+      showRecipientAddresses: showRecipientAddresses.checked,
       notificationsEnabled: notificationsEnabled.checked,
       notificationClickAction: notificationClickAction.value,
       notificationSoundEnabled: notificationSoundEnabled.checked,
@@ -508,7 +511,7 @@
 
   // Save on any change
   const inputs = [
-    pollInterval, popupWidth, popupHeight, displayDensity, maxEmails, senderDisplay, previewLines, use24hTime,
+    pollInterval, popupWidth, popupHeight, displayDensity, maxEmails, senderDisplay, previewLines, use24hTime, showRecipientAddresses,
     notificationsEnabled, notificationClickAction,
     notificationSoundEnabled, notificationSound,
     notificationVolume, notificationPreviewText, badgeColor,

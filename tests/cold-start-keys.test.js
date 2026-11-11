@@ -143,7 +143,7 @@ function buildAddToCalendar(world, src = ACCOUNTS) {
   const body = liftArrowProp(src, 'addToCalendar') + '\nreturn addToCalendar;';
   const factory = new Function('ProtonCalendarICS', 'ensureKeysUnlocked', 'getAccount',
     'request', '_findAddressIdForEmail', '_getCalendarKeys', 'ProtonCalendarSerialize',
-    'ProtonCalendarAPI', body);
+    'ProtonCalendarAPI', '_withSupportedZones', body);
   return factory(
     { parse: () => ({ uid: 'evt-1', summary: 'Lunch' }) },
     world.ensureKeysUnlocked,
@@ -161,6 +161,7 @@ function buildAddToCalendar(world, src = ACCOUNTS) {
         return { ID: 'srv-evt-1' };
       },
     },
+    async (accountId, event) => event,
   );
 }
 
@@ -179,12 +180,12 @@ function buildFetchAttachment(world, src = BACKGROUND) {
 }
 
 function buildGetCalendarAttendees(world, src = ACCOUNTS) {
-  const body = lift(src, 'getCalendarAttendees') + '\nreturn getCalendarAttendees;';
-  const factory = new Function('getCalendarEventByUID', '_pickEventForScope', 'getCalendarEvent',
-    '_decryptAttendeeEmails', 'ensureKeysUnlocked', 'ProtonDiag', 'debugLog', body);
+  const body = lift(src, 'getCalendarAttendees') + lift(src, '_readCalendarAttendees') + '\nreturn getCalendarAttendees;';
+  const factory = new Function('getCalendarEventByUID', '_scopeMatch', 'getCalendarEvent',
+    '_decryptAttendeeEmails', 'ensureKeysUnlocked', 'ProtonDiag', 'debugLog', '_inviteQueue', '_diagUid', body);
   return factory(
     async () => [{ ID: 'ev1', CalendarID: 'cal1', RecurrenceID: null }],
-    events => events[0],
+    events => ({ ev: events[0] }),
     async () => ({ Attendees: [{ Token: 'tok-me', Status: 3 }, { Token: 'tok-co', Status: 0 }] }),
     // Mirrors the real helper, which answers {} while the keys are locked, so
     // the test cannot pass by accident further down the chain.
@@ -196,6 +197,8 @@ function buildGetCalendarAttendees(world, src = ACCOUNTS) {
     world.ensureKeysUnlocked,
     { record() {} },
     () => {},
+    new Map(),
+    (uid) => String(uid),
   );
 }
 

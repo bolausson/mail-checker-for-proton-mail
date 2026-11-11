@@ -146,7 +146,10 @@ const ProtonCalendarICS = (() => {
   }
 
   function _parsePerson(value, params) {
-    const email = (value.match(/^mailto:(.+)$/i) || [])[1] || value;
+    // Trimmed first, as the popup's parser does: " mailto:me@..." must not
+    // keep its "mailto:" and miss every address comparison.
+    const v = String(value).trim();
+    const email = (v.match(/^mailto:([\s\S]+)$/i) || [])[1] || v;
     return {
       email: email.trim(),
       cn: params.CN || '',
@@ -172,6 +175,10 @@ const ProtonCalendarICS = (() => {
   // -------------------------------------------------------------
   // Top-level parser
   // -------------------------------------------------------------
+  // A component name after BEGIN or END ("VEVENT", "X-FOO"); anything else
+  // there is text, e.g. an unfolded description line "Begin: 10:00 coffee".
+  const COMPONENT_NAME = /^[A-Za-z][A-Za-z0-9-]*$/;
+
   /**
    * Parse a raw ICS text into a structured VEVENT (or null if none).
    * Returns the first VEVENT found; ICS files with multiple events
@@ -182,54 +189,83 @@ const ProtonCalendarICS = (() => {
     const lines = _unfold(text).split(/\r\n|\n/);
 
     let method = null;
-    const stack = []; // tracks nested BEGIN/END blocks
+    let calendarZone = null; // X-WR-TIMEZONE
+    const vtimezoneIds = [];
+    const stack = []; // components open outside the event
     let event = null;
+    let eventDone = false;
+    let depth = 0; // components open inside the event
     let alarm = null;
 
     for (const rawLine of lines) {
       if (!rawLine) continue;
-      const upper = rawLine.toUpperCase();
-
-      if (upper.startsWith('BEGIN:')) {
-        const block = upper.slice(6).trim();
-        stack.push(block);
-        if (block === 'VEVENT' && !event) event = { attendees: [], valarms: [], extra: {} };
-        else if (block === 'VALARM' && event) alarm = {};
-        continue;
-      }
-      if (upper.startsWith('END:')) {
-        const block = upper.slice(4).trim();
-        stack.pop();
-        if (block === 'VALARM' && event && alarm) {
-          event.valarms.push(alarm);
-          alarm = null;
-        }
-        // First VEVENT wins: calendar invites typically have a single event.
-        if (block === 'VEVENT' && event) break;
-        continue;
-      }
-
       const prop = _parseProperty(rawLine);
       if (!prop) continue;
+      const inEvent = !!event && !eventDone;
 
-      // METHOD lives at calendar level, not inside VEVENT.
-      if (prop.name === 'METHOD' && !event) {
+      // BEGIN and END read as properties (name trimmed, parameters allowed),
+      // and only with a component name, as the popup's parser reads them:
+      // the card and the saved copy must agree on where each component
+      // starts and ends. Inside the event every component, whatever its
+      // name, is one level down, as in the popup: a VEVENT nested there never
+      // becomes the event, and only END:VEVENT at the event's own level ends it.
+      if ((prop.name === 'BEGIN' || prop.name === 'END') && COMPONENT_NAME.test(prop.value.trim())) {
+        const block = prop.value.trim().toUpperCase();
+        if (prop.name === 'BEGIN') {
+          if (inEvent) {
+            depth++;
+            if (depth === 1 && block === 'VALARM') alarm = {};
+          } else if (block === 'VEVENT' && !event) {
+            event = { attendees: [], valarms: [], extra: {} };
+            depth = 0;
+          } else {
+            stack.push(block);
+          }
+        } else if (inEvent && depth > 0) {
+          if (depth === 1 && alarm) {
+            event.valarms.push(alarm);
+            alarm = null;
+          }
+          depth--;
+        } else if (inEvent && block === 'VEVENT') {
+          // First VEVENT wins: calendar invites typically have a single event.
+          // The lines after it are still read, for calendar-level properties.
+          eventDone = true;
+        } else {
+          stack.pop();
+        }
+        continue;
+      }
+
+      // METHOD lives at calendar level, but some producers write it inside
+      // the VEVENT or after it. Taken wherever it is, as the popup's parser
+      // takes it: the card and an answer must agree on whether this is an
+      // invitation.
+      if (prop.name === 'METHOD') {
         method = prop.value.trim().toUpperCase();
         continue;
       }
-
-      if (alarm) {
-        // Inside a VALARM block.
-        switch (prop.name) {
-          case 'ACTION': alarm.action = prop.value; break;
-          case 'TRIGGER': alarm.trigger = { value: prop.value, params: prop.params }; break;
-          case 'DESCRIPTION': alarm.description = _unescapeText(prop.value); break;
-          case 'SUMMARY': alarm.summary = _unescapeText(prop.value); break;
-        }
+      if (!inEvent) {
+        // Where a floating time (no zone, no Z) belongs, as Proton's Mail app
+        // decides it: the calendar's X-WR-TIMEZONE, else its only VTIMEZONE.
+        const top = stack[stack.length - 1];
+        if (top === 'VCALENDAR' && prop.name === 'X-WR-TIMEZONE' && !calendarZone) calendarZone = prop.value.trim();
+        if (top === 'VTIMEZONE' && prop.name === 'TZID') vtimezoneIds.push(prop.value.trim());
         continue;
       }
 
-      if (!event) continue;
+      if (depth > 0) {
+        // Inside a VALARM of the event; any other nested component is not the event's.
+        if (alarm && depth === 1) {
+          switch (prop.name) {
+            case 'ACTION': alarm.action = prop.value; break;
+            case 'TRIGGER': alarm.trigger = { value: prop.value, params: prop.params }; break;
+            case 'DESCRIPTION': alarm.description = _unescapeText(prop.value); break;
+            case 'SUMMARY': alarm.summary = _unescapeText(prop.value); break;
+          }
+        }
+        continue;
+      }
 
       switch (prop.name) {
         case 'UID': event.uid = prop.value.trim(); break;
@@ -269,7 +305,21 @@ const ProtonCalendarICS = (() => {
 
     if (!event || !event.uid || !event.dtstart) return null;
     event.method = method || 'PUBLISH';
+    event.calendarZone = calendarZone || (vtimezoneIds.length === 1 ? vtimezoneIds[0] : null);
     return event;
+  }
+
+  /** How many VEVENTs the text holds, counted the way properties are read
+   *  (unfolded, name and value apart), so that neither a folded
+   *  "BEGIN:VEV ENT" nor a parameter on BEGIN hides one. */
+  function countVevents(text) {
+    if (typeof text !== 'string') return 0;
+    let n = 0;
+    for (const line of _unfold(text).split(/\r\n|\n/)) {
+      const prop = _parseProperty(line);
+      if (prop && prop.name === 'BEGIN' && prop.value.trim().toUpperCase() === 'VEVENT') n++;
+    }
+    return n;
   }
 
   // Produce a canonical vcal-style serialization of a property set.
@@ -296,17 +346,61 @@ const ProtonCalendarICS = (() => {
     const chunks = [];
     let i = 0;
     while (i < line.length) {
-      chunks.push(line.slice(i, i + 75));
-      i += 75;
+      let end = Math.min(i + 75, line.length);
+      // Never cut between the two halves of a surrogate pair: each half would
+      // be encoded on its own as U+FFFD and an emoji in a long title or
+      // description would reach the calendar as two replacement characters.
+      if (end < line.length && /[\uD800-\uDBFF]/.test(line[end - 1])) end--;
+      chunks.push(line.slice(i, end));
+      i = end;
     }
     return chunks.join('\r\n ');
+  }
+
+  /**
+   * The end of an event that gives a DURATION instead of a DTEND, as a date
+   * object in the same form as dtstart (same zone, all-day flag). Weeks, days,
+   * hours, minutes and seconds are added to the wall-clock time, which is
+   * exact except for an event that spans a daylight-saving change in its own
+   * zone. Returns null for anything that is not a positive duration, and for
+   * an all-day start with a time part, which RFC 5545 does not allow.
+   */
+  function endFromDuration(start, duration) {
+    if (!start || typeof duration !== 'string') return null;
+    const m = duration.trim().toUpperCase()
+      .match(/^(\+)?P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/);
+    if (!m) return null;
+    const [, , w, d, h, mi, s] = m;
+    if ([w, d, h, mi, s].every((x) => x === undefined)) return null;
+    const days = (+w || 0) * 7 + (+d || 0);
+    const secs = (+h || 0) * 3600 + (+mi || 0) * 60 + (+s || 0);
+    if (!days && !secs) return null;
+    if (start.isAllDay && secs) return null;
+    const t = new Date(Date.UTC(start.year, start.month - 1, start.day + days,
+      start.hour, start.minute, start.second + secs));
+    return {
+      ...start,
+      year: t.getUTCFullYear(), month: t.getUTCMonth() + 1, day: t.getUTCDate(),
+      hour: t.getUTCHours(), minute: t.getUTCMinutes(), second: t.getUTCSeconds(),
+      raw: '',
+    };
+  }
+
+  // Proton's API keeps at most the LAST 191 characters of a UID (its own
+  // clients cut it the same way before saving and before every lookup), so an
+  // event stored with a long UID can only be found again by the cut one.
+  const API_UID_MAX = 191;
+  function apiUid(uid) {
+    const s = String(uid == null ? '' : uid);
+    return s.length > API_UID_MAX ? s.slice(s.length - API_UID_MAX) : s;
   }
 
   function escapeText(s) {
     if (s == null) return '';
     return String(s)
       .replace(/\\/g, '\\\\')
-      .replace(/\n/g, '\\n')
+      // A bare CR as well: some readers end a line there.
+      .replace(/\r\n?|\n/g, '\\n')
       .replace(/,/g, '\\,')
       .replace(/;/g, '\\;');
   }
@@ -326,13 +420,32 @@ const ProtonCalendarICS = (() => {
     return dt.isUTC ? `${base}Z` : base;
   }
 
+  // A parameter value written back: RFC 6868 caret escapes for ^, line
+  // breaks and DQUOTE, and quoted when it holds , ; or :. A TZID comes from
+  // the mail, and _decodeParam turned its ^n into a real line break: written
+  // raw, it would start a new property line inside the saved event.
+  function _paramValue(v) {
+    const s = String(v)
+      .replace(/\^/g, '^^')
+      .replace(/\r?\n|\r/g, '^n')
+      .replace(/"/g, "^'");
+    return /[,;:]/.test(s) ? `"${s}"` : s;
+  }
+
   function dateTimeLine(name, dt) {
     if (!dt) return null;
     const params = [];
     if (dt.isAllDay) params.push('VALUE=DATE');
-    if (dt.tzid && !dt.isUTC) params.push(`TZID=${dt.tzid}`);
+    if (dt.tzid && !dt.isUTC) params.push(`TZID=${_paramValue(dt.tzid)}`);
     const paramStr = params.length ? ';' + params.join(';') : '';
     return `${name}${paramStr}:${formatDateTime(dt)}`;
+  }
+
+  /** One date property line ("RECURRENCE-ID;TZID=Europe/Berlin:20261120T100000",
+   *  as the popup passes it) as a date object in parse()'s form, or null. */
+  function parseDateLine(line) {
+    const prop = _parseProperty(String(line == null ? '' : line).trim());
+    return prop ? _parseDateTime(prop.value.trim(), prop.params) : null;
   }
 
   return {
@@ -341,5 +454,10 @@ const ProtonCalendarICS = (() => {
     escapeText,
     formatDateTime,
     dateTimeLine,
+    parseDateLine,
+    countVevents,
+    endFromDuration,
+    apiUid,
+    unescapeText: _unescapeText,
   };
 })();

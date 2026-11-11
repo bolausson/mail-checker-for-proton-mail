@@ -1204,6 +1204,23 @@ body.hide-premium-ui #preview-attachments {
   font-weight: 500;
 }
 
+/* "Show recipients' email addresses" (Pro): To, CC and BCC each on a line of
+   their own, wrapping instead of being cut off, so no address is hidden. */
+.preview-recipients.recipients-full {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.preview-recipients.recipients-full .recipient-line {
+  overflow-wrap: anywhere;
+}
+
+/* Several recipient lines: the avatar stays at the top, beside the sender. */
+.preview-meta-row:has(.recipients-full) {
+  align-items: flex-start;
+}
+
 .preview-subject {
   font-size: 14px;
   font-weight: 600;
@@ -1357,7 +1374,10 @@ body.hide-premium-ui #preview-attachments {
 .calendar-invite-btn.tentative { background: var(--purple); color: #fff; border-color: var(--purple); }
 .calendar-invite-btn.declined { background: #c92a2a; color: #fff; border-color: #c92a2a; }
 .calendar-invite-btn:disabled { opacity: 0.6; cursor: default; }
+/* The current answer: shown, not sent again (the other two change it). */
+.calendar-invite-btn[aria-pressed="true"] { cursor: default; }
 .calendar-invite-status { font-size: 11px; color: var(--text-muted); margin-top: 8px; text-align: center; }
+.calendar-invite-status-note { margin-top: 2px; }
 .calendar-invite-attendees-toggle {
   cursor: pointer;
   text-decoration: underline dotted;
@@ -1792,6 +1812,7 @@ body.hide-premium-ui #preview-attachments {
 
 .compose-from-select {
   flex: 1;
+  min-width: 0;
   border: none;
   border-bottom: 1px solid var(--border);
   padding: 4px 0;
@@ -3039,6 +3060,57 @@ body[data-color-scheme="dark"] .dropdown-item:hover .dropdown-icon-wrap {
 
 .reply-from-select:focus {
   border-color: var(--purple);
+}
+
+/* "Other +alias…": the field to type a +alias in, under the From select of
+   a reply or under "Send as" in Compose. */
+.sender-alias-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 4px 0 2px;
+}
+
+/* In Compose the field lines up with the selects, past the 44px labels. */
+.compose-fields .sender-alias-row {
+  padding-left: 52px;
+}
+
+.sender-alias-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 12px;
+  background: var(--bg);
+  color: var(--text);
+  outline: none;
+}
+
+.sender-alias-input:focus {
+  border-color: var(--purple);
+}
+
+.sender-alias-input[aria-invalid="true"] {
+  border-color: var(--error);
+}
+
+/* A focus ring every theme keeps, on the field and on the sender selects. */
+.sender-alias-input:focus-visible,
+.compose-from-select:focus-visible,
+.reply-from-select:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: 1px;
+}
+
+/* The text in the text colour, so it reads in every theme at this size; the
+   field's red border marks the error. */
+.sender-alias-error {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text);
 }
 
 .forward-to-row {

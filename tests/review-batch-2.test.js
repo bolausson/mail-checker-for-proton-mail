@@ -118,8 +118,11 @@ describe('calendar RSVP encodes UTF-8, not code points', () => {
   it('does not hand the ICS text straight to btoa', () => {
     // btoa throws above U+00FF (an emoji in a title) and silently emits Latin-1
     // for U+0080..U+00FF (an umlaut in the organizer name).
-    expect(ACCOUNTS).not.toMatch(/btoa\(icsData\)/);
-    expect(ACCOUNTS).toMatch(/TextEncoder\(\)\.encode\(icsData\)/);
+    // The reply is built in sendCalendarRsvp's sendReply(replyIcs): the
+    // popup's ICS, or the same ICS marked as a Proton reply. The behaviour
+    // (UTF-8 bytes of an emoji title) is pinned in invite-not-in-calendar.test.js.
+    expect(ACCOUNTS).not.toMatch(/btoa\((icsData|replyIcs)\)/);
+    expect(ACCOUNTS).toMatch(/TextEncoder\(\)\.encode\(replyIcs\)/);
   });
 });
 
